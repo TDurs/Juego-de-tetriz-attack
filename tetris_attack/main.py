@@ -7,6 +7,7 @@ from config import *
 from board import Board
 from ia_clasica import elegir_movimiento_clasico
 from ia_adaptativa import cargar_modelo, predecir_movimiento
+from puntuaciones import cargar_ranking, guardar_puntaje
 
 pygame.init()
 pantalla = pygame.display.set_mode((ANCHO_VENTANA, ALTO_VENTANA))
@@ -15,13 +16,18 @@ fuente = pygame.font.SysFont("Arial", 24)
 fuente_grande = pygame.font.SysFont("Arial", 38, bold=True)
 fuente_titulo = pygame.font.SysFont("Arial", 56, bold=True)
 fuente_hud = pygame.font.SysFont("Arial", 26, bold=True)
+fuente_nombre = pygame.font.SysFont("Arial", 64, bold=True)
 reloj = pygame.time.Clock()
 
 pygame.key.set_repeat(200, 50)
 
+# Configuración global
 modo_juego = "clasico"
-jugador = Board(fisica=True)
-ia = Board(fisica=True)
+dificultad_ia = "normal"       # "facil", "normal", "dificil"
+velocidad_subida = "normal"    # "lento", "normal", "rapido"
+
+jugador = None
+ia = None
 turno_ia_timer = 0
 partida_terminada = False
 ganador = None
@@ -34,25 +40,23 @@ combo_ia = 0
 ultima_cadena_jugador = 0
 ultima_cadena_ia = 0
 
-TIEMPO_SUBIDA_INICIAL = 3000
-tiempo_subida = TIEMPO_SUBIDA_INICIAL
+# Tiempo base de subida según velocidad
+TIEMPOS_BASE = {"lento": 6000, "normal": 3000, "rapido": 1500}
+tiempo_subida = TIEMPOS_BASE[velocidad_subida]
 ultimo_rise = pygame.time.get_ticks()
 
 animaciones = []
 pausa = False
 
-# Colores modernos
 COLOR_FONDO = (18, 18, 28)
 COLOR_LINEAS_GUIA = (55, 55, 70)
 ALPHA_BRILLO = 60
 
-# Fondo elegante con degradado
 def crear_fondo():
     surf = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA))
     for y in range(ALTO_VENTANA):
         color = (15 + y//20, 15 + y//25, 25 + y//30)
         pygame.draw.line(surf, color, (0, y), (ANCHO_VENTANA, y))
-    # Patrón de puntos muy sutiles
     for x in range(0, ANCHO_VENTANA, 80):
         for y in range(0, ALTO_VENTANA, 80):
             pygame.draw.circle(surf, (30,30,40), (x, y), 1)
@@ -60,7 +64,6 @@ def crear_fondo():
 
 fondo_estatico = crear_fondo()
 
-# Partículas decorativas (estilo estrellas)
 class Particula:
     def __init__(self):
         self.x = random.randint(0, ANCHO_VENTANA)
@@ -79,7 +82,7 @@ class Particula:
 particulas = [Particula() for _ in range(50)]
 
 # ------------------------------------------------------------
-# Dibujo de paneles con efecto vidrioso
+# Funciones de dibujo
 # ------------------------------------------------------------
 def dibujar_panel(superficie, color_idx, x, y, w, h):
     rect = pygame.Rect(x, y, w, h)
@@ -87,16 +90,13 @@ def dibujar_panel(superficie, color_idx, x, y, w, h):
         pygame.draw.rect(superficie, (40,40,50), rect, 1)
         return
     color_base = COLORES_RGB[color_idx]
-    # Sombra interna
     pygame.draw.rect(superficie, color_base, rect, border_radius=4)
-    # Borde superior e izquierdo más claro
     claro = [min(c + 100, 255) for c in color_base]
     oscuro = [max(c - 100, 0) for c in color_base]
     pygame.draw.line(superficie, claro, (x, y), (x+w-1, y), 3)
     pygame.draw.line(superficie, claro, (x, y), (x, y+h-1), 3)
     pygame.draw.line(superficie, oscuro, (x, y+h-1), (x+w-1, y+h-1), 3)
     pygame.draw.line(superficie, oscuro, (x+w-1, y), (x+w-1, y+h-1), 3)
-    # Brillo diagonal
     brillo = pygame.Surface((w//3, h//3), pygame.SRCALPHA)
     brillo.fill((255,255,255, ALPHA_BRILLO))
     superficie.blit(brillo, (x+3, y+3))
@@ -107,13 +107,11 @@ def sombra_rect(superficie, rect, color=(0,0,0,60), desplazamiento=2):
     superficie.blit(sombra, rect.move(desplazamiento, desplazamiento))
 
 def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_restante=1.0):
-    # Fondo del tablero con sombra y borde decorativo
     tablero_rect = pygame.Rect(offset_x-6, offset_y-6, ANCHO_TABLERO*TAM_CELDA+12, ALTO_VISIBLE*TAM_CELDA+12)
     sombra_rect(pantalla, tablero_rect, (0,0,0,100), 4)
     pygame.draw.rect(pantalla, (25,25,35), tablero_rect, border_radius=10)
-    pygame.draw.rect(pantalla, (80,70,40), tablero_rect, 2, border_radius=10)  # marco dorado oscuro
+    pygame.draw.rect(pantalla, (80,70,40), tablero_rect, 2, border_radius=10)
 
-    # Líneas guía suaves
     for c in range(ANCHO_TABLERO+1):
         x = offset_x + c*TAM_CELDA
         pygame.draw.line(pantalla, COLOR_LINEAS_GUIA, (x, offset_y), (x, offset_y+ALTO_VISIBLE*TAM_CELDA), 1)
@@ -134,7 +132,6 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
             y = base_y + p.offset_y
             dibujar_panel(pantalla, color, x, y, TAM_CELDA-6, TAM_CELDA-6)
 
-    # Cursor del jugador mejorado (solo si es su tablero)
     if es_jugador:
         cx, cy = board.cursor_x, board.cursor_y
         if inicio_fila <= cy < FILAS_TOTALES:
@@ -143,24 +140,18 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
             cy_pix = offset_y + fila_vis * TAM_CELDA
             cursor_rect = pygame.Rect(cx_pix, cy_pix, TAM_CELDA*2, TAM_CELDA)
             valida = board._posicion_es_valida(cy, cx)
-            # Aura luminosa
             color_aura = (255,255,120,50) if valida else (255,120,120,50)
             aura = pygame.Surface((cursor_rect.width+14, cursor_rect.height+14), pygame.SRCALPHA)
             pygame.draw.rect(aura, color_aura, aura.get_rect(), border_radius=8)
             pantalla.blit(aura, cursor_rect.move(-7,-7))
-            # Borde grueso
             color_borde = (255,255,0,230) if valida else (255,100,100,210)
             pygame.draw.rect(pantalla, color_borde, cursor_rect, 4, border_radius=6)
-            # Marcas triangulares superior e inferior
             centro_x = cx_pix + TAM_CELDA
-            # triángulo arriba
             pygame.draw.polygon(pantalla, color_borde,
                 [(centro_x-6, cy_pix-6), (centro_x+6, cy_pix-6), (centro_x, cy_pix-12)])
-            # triángulo abajo
             pygame.draw.polygon(pantalla, color_borde,
                 [(centro_x-6, cy_pix+TAM_CELDA+6), (centro_x+6, cy_pix+TAM_CELDA+6), (centro_x, cy_pix+TAM_CELDA+12)])
 
-    # Barra de subida
     if not partida_terminada:
         barra_rect = pygame.Rect(offset_x, offset_y - 18, ANCHO_TABLERO*TAM_CELDA, 10)
         pygame.draw.rect(pantalla, (30,30,30), barra_rect, border_radius=5)
@@ -170,19 +161,20 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
         pygame.draw.rect(pantalla, color_barra, relleno, border_radius=5)
 
 def dibujar_hud():
-    # Panel inferior translúcido
     panel = pygame.Rect(0, ALTO_VENTANA-70, ANCHO_VENTANA, 70)
     pygame.draw.rect(pantalla, (15,15,25,220), panel)
     pygame.draw.line(pantalla, (80,80,100), (0, ALTO_VENTANA-70), (ANCHO_VENTANA, ALTO_VENTANA-70), 2)
-    # Puntuaciones
-    txt_jug = fuente_hud.render(f"Jugador: {puntuacion_jugador}", True, (255,255,255))
-    txt_ia = fuente_hud.render(f"IA: {puntuacion_ia}", True, (255,255,255))
-    pantalla.blit(txt_jug, (40, ALTO_VENTANA-55))
-    pantalla.blit(txt_ia, (ANCHO_VENTANA//2 + 40, ALTO_VENTANA-55))
-    # Modo y pausa
-    txt_modo = fuente.render(f"Modo: {modo_juego.upper()}", True, (200,200,200))
+    if modo_juego == "solitario":
+        txt_jug = fuente_hud.render(f"Puntuación: {puntuacion_jugador}", True, (255,255,255))
+        pantalla.blit(txt_jug, (ANCHO_VENTANA//2 - txt_jug.get_width()//2, ALTO_VENTANA-55))
+    else:
+        txt_jug = fuente_hud.render(f"Jugador: {puntuacion_jugador}", True, (255,255,255))
+        txt_ia = fuente_hud.render(f"IA: {puntuacion_ia}", True, (255,255,255))
+        pantalla.blit(txt_jug, (40, ALTO_VENTANA-55))
+        pantalla.blit(txt_ia, (ANCHO_VENTANA//2 + 40, ALTO_VENTANA-55))
+    txt_modo = fuente.render(f"Modo: {modo_juego.capitalize()}", True, (200,200,200))
     txt_pausa = fuente.render("ESC: Pausa", True, (150,150,150))
-    pantalla.blit(txt_modo, (ANCHO_VENTANA//2 - 70, ALTO_VENTANA-65))
+    pantalla.blit(txt_modo, (ANCHO_VENTANA//2 - 80, ALTO_VENTANA-65))
     pantalla.blit(txt_pausa, (ANCHO_VENTANA - 170, ALTO_VENTANA-55))
 
 def mostrar_texto_temporal(texto, x, y, duracion=60, color=(255, 255, 0), tamaño=32):
@@ -213,6 +205,9 @@ def dibujar_animaciones():
         else:
             animaciones[animaciones.index(anim)] = (tipo, datos, tiempo)
 
+# ------------------------------------------------------------
+# Menú de pausa
+# ------------------------------------------------------------
 def menu_pausa():
     global pausa
     opciones = ["Continuar", "Reiniciar", "Menú Principal", "Salir"]
@@ -248,6 +243,110 @@ def menu_pausa():
         reloj.tick(30)
     return "juego"
 
+# ------------------------------------------------------------
+# Entrada de nombre
+# ------------------------------------------------------------
+def ingresar_nombre(puntaje):
+    nombre = ""
+    while len(nombre) < 3:
+        for evento in pygame.event.get():
+            if evento.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if evento.type == pygame.KEYDOWN:
+                if evento.key >= pygame.K_a and evento.key <= pygame.K_z:
+                    if len(nombre) < 3:
+                        nombre += chr(evento.key).upper()
+                elif evento.key == pygame.K_BACKSPACE and len(nombre) > 0:
+                    nombre = nombre[:-1]
+        pantalla.blit(fondo_estatico, (0,0))
+        overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
+        overlay.fill((0,0,0,180))
+        pantalla.blit(overlay, (0,0))
+        txt_titulo = fuente_titulo.render("¡NUEVO RÉCORD!", True, (255,255,0))
+        pantalla.blit(txt_titulo, (ANCHO_VENTANA//2 - txt_titulo.get_width()//2, 120))
+        txt_sub = fuente_grande.render(f"Puntuación: {puntaje}", True, (255,255,255))
+        pantalla.blit(txt_sub, (ANCHO_VENTANA//2 - txt_sub.get_width()//2, 200))
+        txt_inst = fuente.render("Ingresa tus iniciales (3 letras):", True, (200,200,200))
+        pantalla.blit(txt_inst, (ANCHO_VENTANA//2 - txt_inst.get_width()//2, 280))
+        for i in range(3):
+            letra = nombre[i] if i < len(nombre) else "_"
+            txt_letra = fuente_nombre.render(letra, True, (255,255,255))
+            x = ANCHO_VENTANA//2 - 60 + i*40
+            pantalla.blit(txt_letra, (x, 340))
+            pygame.draw.line(pantalla, (255,215,0) if i < len(nombre) else (100,100,100), (x, 390), (x+30, 390), 3)
+        pygame.display.flip()
+        reloj.tick(30)
+    return nombre
+
+# ------------------------------------------------------------
+# Mostrar ranking
+# ------------------------------------------------------------
+def mostrar_ranking():
+    ranking = cargar_ranking()
+    esperando = True
+    while esperando:
+        for evento in pygame.event.get():
+            if evento.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if evento.type == pygame.KEYDOWN:
+                if evento.key == pygame.K_ESCAPE or evento.key == pygame.K_RETURN:
+                    esperando = False
+        pantalla.blit(fondo_estatico, (0,0))
+        overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
+        overlay.fill((0,0,0,200))
+        pantalla.blit(overlay, (0,0))
+        txt_titulo = fuente_titulo.render("MEJORES PUNTAJES", True, (255,255,0))
+        pantalla.blit(txt_titulo, (ANCHO_VENTANA//2 - txt_titulo.get_width()//2, 50))
+        if not ranking:
+            txt_vacio = fuente_grande.render("Aún no hay récords", True, (200,200,200))
+            pantalla.blit(txt_vacio, (ANCHO_VENTANA//2 - txt_vacio.get_width()//2, 200))
+        else:
+            for i, entrada in enumerate(ranking):
+                color = (255,255,255) if i < 3 else (200,200,200)
+                txt = fuente_grande.render(f"{i+1:2d}. {entrada['nombre']}  -  {entrada['puntaje']}", True, color)
+                pantalla.blit(txt, (ANCHO_VENTANA//2 - 180, 150 + i*50))
+        txt_volver = fuente.render("Presiona ENTER o ESC para volver", True, (150,150,150))
+        pantalla.blit(txt_volver, (ANCHO_VENTANA//2 - txt_volver.get_width()//2, ALTO_VENTANA-50))
+        pygame.display.flip()
+        reloj.tick(30)
+
+# ------------------------------------------------------------
+# Selección de dificultad (submenú para clásico)
+# ------------------------------------------------------------
+def menu_dificultad():
+    global dificultad_ia
+    opciones = ["Fácil", "Normal", "Difícil"]
+    seleccion = 1  # normal por defecto
+    while True:
+        overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
+        overlay.fill((0,0,0,180))
+        pantalla.blit(overlay, (0,0))
+        txt_titulo = fuente_titulo.render("DIFICULTAD IA", True, (255,255,255))
+        pantalla.blit(txt_titulo, (ANCHO_VENTANA//2 - txt_titulo.get_width()//2, 100))
+        for i, op in enumerate(opciones):
+            color = (255,215,0) if i == seleccion else (200,200,200)
+            txt = fuente_grande.render(op, True, color)
+            rect = txt.get_rect(center=(ANCHO_VENTANA//2, 220 + i*80))
+            if i == seleccion:
+                pygame.draw.rect(pantalla, (40,40,60), rect.inflate(50, 20), border_radius=14)
+                pygame.draw.rect(pantalla, (255,215,0), rect.inflate(50, 20), 3, border_radius=14)
+            pantalla.blit(txt, rect)
+        instru = fuente.render("↑↓: Elegir   ENTER: Confirmar", True, (150,150,150))
+        pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
+        for evento in pygame.event.get():
+            if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if evento.type == pygame.KEYDOWN:
+                if evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%3
+                elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%3
+                elif evento.key == pygame.K_RETURN:
+                    dificultad_ia = ["facil","normal","dificil"][seleccion]
+                    return
+        pygame.display.flip()
+        reloj.tick(30)
+
+# ------------------------------------------------------------
+# Lógica de juego
+# ------------------------------------------------------------
 def procesar_eventos():
     global jugador, ia, turno_ia_timer, partida_terminada, ganador, historial_jugador, pausa
     for evento in pygame.event.get():
@@ -256,7 +355,6 @@ def procesar_eventos():
             if evento.key == pygame.K_ESCAPE and not partida_terminada:
                 pausa = True; continue
             if partida_terminada:
-                if evento.key == pygame.K_r: reiniciar_partida()
                 continue
             if pausa: continue
             if evento.key == pygame.K_LEFT: jugador.mover_cursor(-1, 0)
@@ -274,42 +372,56 @@ def actualizar_mundo(dt):
     global jugador, ia, puntuacion_jugador, puntuacion_ia, combo_jugador, combo_ia
     global ultima_cadena_jugador, ultima_cadena_ia, partida_terminada, ganador
     if pausa: return
-    # Jugador
-    estado_anterior_j = jugador.estado
-    jugador.update(dt)
-    if estado_anterior_j != 'pausa' and jugador.estado == 'pausa':
-        combo_jugador += 1
-        puntuacion_jugador += 10 * combo_jugador
-        if combo_jugador > 1:
-            mostrar_texto_temporal(f"COMBO x{combo_jugador}!", ANCHO_VENTANA//2-120, ALTO_VENTANA//2-50)
-        ultima_cadena_jugador = combo_jugador
-    if jugador.estado == 'normal' and estado_anterior_j == 'pausa' and jugador.esta_estable():
-        if ultima_cadena_jugador > 0:
-            ia.recibir_basura(ultima_cadena_jugador * 2)
-            ultima_cadena_jugador = 0; combo_jugador = 0
-    # IA
-    estado_anterior_i = ia.estado
-    ia.update(dt)
-    if estado_anterior_i != 'pausa' and ia.estado == 'pausa':
-        combo_ia += 1
-        puntuacion_ia += 10 * combo_ia
-        ultima_cadena_ia = combo_ia
-    if ia.estado == 'normal' and estado_anterior_i == 'pausa' and ia.esta_estable():
-        if ultima_cadena_ia > 0:
-            jugador.recibir_basura(ultima_cadena_ia * 2)
-            ultima_cadena_ia = 0; combo_ia = 0
-    if jugador.esta_perdido(): partida_terminada = True; ganador = "IA"
-    elif ia.esta_perdido(): partida_terminada = True; ganador = "Jugador"
+
+    if modo_juego != "solitario":
+        estado_anterior_j = jugador.estado
+        jugador.update(dt)
+        if estado_anterior_j != 'pausa' and jugador.estado == 'pausa':
+            combo_jugador += 1
+            puntuacion_jugador += 10 * combo_jugador
+            if combo_jugador > 1:
+                mostrar_texto_temporal(f"COMBO x{combo_jugador}!", ANCHO_VENTANA//2-120, ALTO_VENTANA//2-50)
+            ultima_cadena_jugador = combo_jugador
+        if jugador.estado == 'normal' and estado_anterior_j == 'pausa' and jugador.esta_estable():
+            if ultima_cadena_jugador > 0:
+                ia.recibir_basura(ultima_cadena_jugador * 2)
+                ultima_cadena_jugador = 0; combo_jugador = 0
+
+        estado_anterior_i = ia.estado
+        ia.update(dt)
+        if estado_anterior_i != 'pausa' and ia.estado == 'pausa':
+            combo_ia += 1
+            puntuacion_ia += 10 * combo_ia
+            ultima_cadena_ia = combo_ia
+        if ia.estado == 'normal' and estado_anterior_i == 'pausa' and ia.esta_estable():
+            if ultima_cadena_ia > 0:
+                jugador.recibir_basura(ultima_cadena_ia * 2)
+                ultima_cadena_ia = 0; combo_ia = 0
+
+        if jugador.esta_perdido(): partida_terminada = True; ganador = "IA"
+        elif ia.esta_perdido(): partida_terminada = True; ganador = "Jugador"
+    else:
+        estado_anterior = jugador.estado
+        jugador.update(dt)
+        if estado_anterior != 'pausa' and jugador.estado == 'pausa':
+            combo_jugador += 1
+            puntuacion_jugador += 10 * combo_jugador
+            if combo_jugador > 1:
+                mostrar_texto_temporal(f"COMBO x{combo_jugador}!", ANCHO_VENTANA//2-120, ALTO_VENTANA//2-50)
+        if jugador.esta_perdido():
+            partida_terminada = True
+            ganador = "Jugador"
 
 def actualizar_ia():
     global ia, turno_ia_timer
-    if partida_terminada or pausa: return
+    if modo_juego == "solitario" or partida_terminada or pausa:
+        return
     turno_ia_timer += 1
     if turno_ia_timer >= IA_DELAY:
         turno_ia_timer = 0
         copia_logica = ia.copiar()
         if modo_juego == "clasico":
-            accion = elegir_movimiento_clasico(copia_logica)
+            accion = elegir_movimiento_clasico(copia_logica, dificultad_ia)
         else:
             try:
                 modelo = cargar_modelo()
@@ -323,9 +435,16 @@ def actualizar_subida():
     ahora = pygame.time.get_ticks()
     if ahora - ultimo_rise >= tiempo_subida:
         jugador.recibir_basura(1)
-        ia.recibir_basura(1)
+        if modo_juego != "solitario":
+            ia.recibir_basura(1)
         ultimo_rise = ahora
-        tiempo_subida = max(500, tiempo_subida - 50)
+        # Aceleración más agresiva en rápido
+        if velocidad_subida == "rapido":
+            tiempo_subida = max(300, tiempo_subida - 80)
+        elif velocidad_subida == "normal":
+            tiempo_subida = max(500, tiempo_subida - 50)
+        else:
+            tiempo_subida = max(800, tiempo_subida - 30)
 
 def guardar_historial():
     if historial_jugador:
@@ -342,47 +461,63 @@ def reiniciar_partida():
     global ultimo_rise, tiempo_subida, ultima_cadena_jugador, ultima_cadena_ia
     guardar_historial()
     jugador = Board(fisica=True)
-    ia = Board(fisica=True)
+    if modo_juego != "solitario":
+        ia = Board(fisica=True)
+    else:
+        ia = None
     partida_terminada = False; ganador = None; historial_jugador = []
     puntuacion_jugador = 0; puntuacion_ia = 0
     combo_jugador = 0; combo_ia = 0
     ultima_cadena_jugador = 0; ultima_cadena_ia = 0
     ultimo_rise = pygame.time.get_ticks()
-    tiempo_subida = TIEMPO_SUBIDA_INICIAL
+    tiempo_subida = TIEMPOS_BASE[velocidad_subida]
 
 def dibujar_interfaz(proporcion=1.0):
     pantalla.blit(fondo_estatico, (0,0))
-    # Partículas decorativas
     for p in particulas:
         p.draw(pantalla)
-    # Línea divisoria central con brillo
-    centro_x = ANCHO_VENTANA//2
-    pygame.draw.line(pantalla, (60,60,80), (centro_x, MARGEN_SUPERIOR), (centro_x, ALTO_VENTANA-MARGEN_INFERIOR), 2)
-    for i in range(5):
-        pygame.draw.line(pantalla, (100,100,140, 50-i*10), (centro_x-1, MARGEN_SUPERIOR), (centro_x-1, ALTO_VENTANA-MARGEN_INFERIOR), 1)
-    # Títulos encima de cada tablero
-    tit_jug = fuente_grande.render("JUGADOR", True, (255,255,255))
-    tit_ia = fuente_grande.render("IA", True, (255,255,255))
-    pantalla.blit(tit_jug, (MARGEN_LATERAL + (ANCHO_TABLERO*TAM_CELDA)//2 - tit_jug.get_width()//2, MARGEN_SUPERIOR-50))
-    pantalla.blit(tit_ia, (ANCHO_VENTANA - MARGEN_LATERAL - (ANCHO_TABLERO*TAM_CELDA)//2 - tit_ia.get_width()//2, MARGEN_SUPERIOR-50))
-    # Tableros
-    offset_jug_x = MARGEN_LATERAL
-    offset_ia_x = ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO*TAM_CELDA
-    offset_y = MARGEN_SUPERIOR
-    dibujar_tablero(jugador, offset_jug_x, offset_y, es_jugador=True, tiempo_subida_restante=proporcion)
-    dibujar_tablero(ia, offset_ia_x, offset_y, es_jugador=False, tiempo_subida_restante=proporcion)
+    if modo_juego != "solitario":
+        centro_x = ANCHO_VENTANA//2
+        pygame.draw.line(pantalla, (60,60,80), (centro_x, MARGEN_SUPERIOR), (centro_x, ALTO_VENTANA-MARGEN_INFERIOR), 2)
+        for i in range(5):
+            pygame.draw.line(pantalla, (100,100,140, 50-i*10), (centro_x-1, MARGEN_SUPERIOR), (centro_x-1, ALTO_VENTANA-MARGEN_INFERIOR), 1)
+        tit_jug = fuente_grande.render("JUGADOR", True, (255,255,255))
+        tit_ia = fuente_grande.render("IA", True, (255,255,255))
+        pantalla.blit(tit_jug, (MARGEN_LATERAL + (ANCHO_TABLERO*TAM_CELDA)//2 - tit_jug.get_width()//2, MARGEN_SUPERIOR-50))
+        pantalla.blit(tit_ia, (ANCHO_VENTANA - MARGEN_LATERAL - (ANCHO_TABLERO*TAM_CELDA)//2 - tit_ia.get_width()//2, MARGEN_SUPERIOR-50))
+        offset_jug_x = MARGEN_LATERAL
+        offset_ia_x = ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO*TAM_CELDA
+        offset_y = MARGEN_SUPERIOR
+        dibujar_tablero(jugador, offset_jug_x, offset_y, es_jugador=True, tiempo_subida_restante=proporcion)
+        dibujar_tablero(ia, offset_ia_x, offset_y, es_jugador=False, tiempo_subida_restante=proporcion)
+    else:
+        offset_x = ANCHO_VENTANA//2 - (ANCHO_TABLERO*TAM_CELDA)//2
+        offset_y = MARGEN_SUPERIOR
+        tit_jug = fuente_grande.render("SOLITARIO", True, (255,255,255))
+        pantalla.blit(tit_jug, (ANCHO_VENTANA//2 - tit_jug.get_width()//2, MARGEN_SUPERIOR-50))
+        dibujar_tablero(jugador, offset_x, offset_y, es_jugador=True, tiempo_subida_restante=proporcion)
     dibujar_hud()
     if partida_terminada:
-        fin_rect = pygame.Rect(0, ALTO_VENTANA-100, ANCHO_VENTANA, 50)
-        pygame.draw.rect(pantalla, (20,20,30,230), fin_rect)
-        texto_fin = fuente_grande.render(f"FIN DEL JUEGO. GANADOR: {ganador} (R para reiniciar)", True, (255,255,100))
-        pantalla.blit(texto_fin, (ANCHO_VENTANA//2 - texto_fin.get_width()//2, ALTO_VENTANA-90))
+        overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
+        overlay.fill((0,0,0,180))
+        pantalla.blit(overlay, (0,0))
+        if modo_juego == "solitario":
+            texto_fin = fuente_grande.render(f"¡FIN! Puntuación: {puntuacion_jugador}", True, (255,255,100))
+        else:
+            texto_fin = fuente_grande.render(f"FIN DEL JUEGO. GANADOR: {ganador}", True, (255,255,100))
+        texto_continuar = fuente.render("Presiona ENTER o R para continuar", True, (200,200,200))
+        pantalla.blit(texto_fin, (ANCHO_VENTANA//2 - texto_fin.get_width()//2, ALTO_VENTANA//2 - 40))
+        pantalla.blit(texto_continuar, (ANCHO_VENTANA//2 - texto_continuar.get_width()//2, ALTO_VENTANA//2 + 20))
     dibujar_animaciones()
 
+# ------------------------------------------------------------
+# Menú principal mejorado
+# ------------------------------------------------------------
 def menu_seleccion_modo():
-    global modo_juego
+    global modo_juego, velocidad_subida, dificultad_ia
     seleccion = 0
-    opciones = ["Clásico", "Adaptativo"]
+    opciones = ["Clásico", "Adaptativo", "Solitario", "Récords",
+                f"Velocidad: {velocidad_subida.capitalize()}", "Salir"]
     reloj_local = pygame.time.Clock()
     dt = 0.0
     while True:
@@ -396,33 +531,61 @@ def menu_seleccion_modo():
         pantalla.blit(sombra, (ANCHO_VENTANA//2 - titulo.get_width()//2 + 3, 73))
         pantalla.blit(titulo, (ANCHO_VENTANA//2 - titulo.get_width()//2, 70))
         subtitulo = fuente_grande.render("Panel de Pon IA", True, (200,200,200))
-        pantalla.blit(subtitulo, (ANCHO_VENTANA//2 - subtitulo.get_width()//2, 160))
+        pantalla.blit(subtitulo, (ANCHO_VENTANA//2 - subtitulo.get_width()//2, 150))
         for i, op in enumerate(opciones):
             color = (255,215,0) if i == seleccion else (200,200,200)
             txt = fuente_grande.render(op, True, color)
-            rect = txt.get_rect(center=(ANCHO_VENTANA//2, 300 + i*90))
+            rect = txt.get_rect(center=(ANCHO_VENTANA//2, 230 + i*65))
             if i == seleccion:
-                pygame.draw.rect(pantalla, (40,40,60), rect.inflate(60, 25), border_radius=16)
-                pygame.draw.rect(pantalla, (255,215,0), rect.inflate(60, 25), 4, border_radius=16)
+                pygame.draw.rect(pantalla, (40,40,60), rect.inflate(60, 20), border_radius=14)
+                pygame.draw.rect(pantalla, (255,215,0), rect.inflate(60, 20), 3, border_radius=14)
             pantalla.blit(txt, rect)
-        instru = fuente.render("↑↓: Elegir   ENTER: Confirmar   ESC: Salir", True, (150,150,150))
+        instru = fuente.render("↑↓: Elegir   ENTER: Confirmar   ←→: Cambiar velocidad", True, (150,150,150))
         pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
-                if evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%2
-                elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%2
+                if evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%len(opciones)
+                elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%len(opciones)
                 elif evento.key == pygame.K_RETURN:
-                    modo_juego = "clasico" if seleccion==0 else "adaptativo"
-                    return
-                elif evento.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
+                    if seleccion == 0:          # Clásico
+                        menu_dificultad()
+                        modo_juego = "clasico"; return
+                    elif seleccion == 1:        # Adaptativo
+                        modo_juego = "adaptativo"; return
+                    elif seleccion == 2:        # Solitario
+                        modo_juego = "solitario"; return
+                    elif seleccion == 3:        # Récords
+                        mostrar_ranking()
+                    elif seleccion == 4:        # Velocidad (se puede cambiar con ← → pero también al pulsar ENTER rotamos)
+                        pass  # ya se cambia con izq/der
+                    elif seleccion == 5:        # Salir
+                        pygame.quit(); sys.exit()
+                elif evento.key == pygame.K_ESCAPE:
+                    pygame.quit(); sys.exit()
+                # Cambiar velocidad con flechas izquierda/derecha cuando esté seleccionada la opción
+                if seleccion == 4:
+                    if evento.key == pygame.K_LEFT or evento.key == pygame.K_RIGHT:
+                        if velocidad_subida == "lento":
+                            velocidad_subida = "normal" if evento.key == pygame.K_RIGHT else "rapido"
+                        elif velocidad_subida == "normal":
+                            velocidad_subida = "rapido" if evento.key == pygame.K_RIGHT else "lento"
+                        elif velocidad_subida == "rapido":
+                            velocidad_subida = "lento" if evento.key == pygame.K_RIGHT else "normal"
+                        # Actualizar texto de la opción
+                        opciones[4] = f"Velocidad: {velocidad_subida.capitalize()}"
         pygame.display.flip()
         dt = reloj_local.tick(60)/1000.0
 
+# ------------------------------------------------------------
+# Bucle principal
+# ------------------------------------------------------------
 def main():
-    global pausa, partida_terminada, ganador
+    global pausa, partida_terminada, ganador, modo_juego, puntuacion_jugador, tiempo_subida, velocidad_subida
     while True:
         menu_seleccion_modo()
+        # Asegurar que el tiempo base se actualice según la velocidad configurada
+        tiempo_subida = TIEMPOS_BASE[velocidad_subida]
         reiniciar_partida()
         dt = 0.0
         en_partida = True
@@ -441,7 +604,26 @@ def main():
             dibujar_interfaz(proporcion)
             pygame.display.flip()
             dt = reloj.tick(FPS)/1000.0
+
+            if partida_terminada:
+                reloj.tick(30)
+                esperando = True
+                while esperando:
+                    for evento in pygame.event.get():
+                        if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
+                        if evento.type == pygame.KEYDOWN:
+                            if evento.key == pygame.K_RETURN or evento.key == pygame.K_r:
+                                esperando = False
+                    reloj.tick(30)
+                break
+
         guardar_historial()
+        if modo_juego == "solitario" and partida_terminada and puntuacion_jugador > 0:
+            ranking = cargar_ranking()
+            if len(ranking) < 10 or puntuacion_jugador > ranking[-1]['puntaje']:
+                nombre = ingresar_nombre(puntuacion_jugador)
+                guardar_puntaje(nombre, puntuacion_jugador)
+            mostrar_ranking()
 
 if __name__ == "__main__":
     main()

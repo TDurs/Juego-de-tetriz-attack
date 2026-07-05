@@ -1,7 +1,7 @@
 # ia_clasica.py
-from config import ANCHO_TABLERO
 import random
 import time
+from config import ANCHO_TABLERO
 
 def evaluar(board):
     copia = board.copiar()
@@ -34,7 +34,26 @@ def minimax(board, profundidad, alpha, beta, maximizando):
     else:
         return evaluar(board), None
 
-def elegir_movimiento_clasico(board, tiempo_limite=0.5):
+def elegir_movimiento_clasico(board, dificultad="normal"):
+    # Configuración según dificultad
+    if dificultad == "facil":
+        tiempo_limite = 0.2
+        profundidad_max = 1
+        prob_aleatorio = 0.3
+    elif dificultad == "dificil":
+        tiempo_limite = 1.0
+        profundidad_max = 6
+        prob_aleatorio = 0.0
+    else:  # normal
+        tiempo_limite = 0.5
+        profundidad_max = 4
+        prob_aleatorio = 0.0
+
+    # Posibilidad de movimiento aleatorio en fácil
+    if random.random() < prob_aleatorio:
+        posibles = [x for x in range(ANCHO_TABLERO-1) if board.copiar().intercambiar(x)]
+        return random.choice(posibles) if posibles else 0
+
     mejor_accion = None
     mejor_valor = -float('inf')
     inicio = time.time()
@@ -45,7 +64,7 @@ def elegir_movimiento_clasico(board, tiempo_limite=0.5):
             mejor_valor = valor
             mejor_accion = accion
         profundidad += 1
-        if profundidad > 4:
+        if profundidad > profundidad_max:
             break
     if mejor_accion is None:
         posibles = [x for x in range(ANCHO_TABLERO-1) if board.copiar().intercambiar(x)]
