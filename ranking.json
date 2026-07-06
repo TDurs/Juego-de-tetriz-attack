@@ -1,6 +1,26 @@
 [
   {
+    "nombre": "ASX",
+    "puntaje": 6300
+  },
+  {
+    "nombre": "ASS",
+    "puntaje": 3000
+  },
+  {
+    "nombre": "SAS",
+    "puntaje": 2310
+  },
+  {
     "nombre": "SDA",
     "puntaje": 780
+  },
+  {
+    "nombre": "SDS",
+    "puntaje": 450
+  },
+  {
+    "nombre": "SAA",
+    "puntaje": 210
   }
 ]

@@ -6,7 +6,7 @@ import csv
 from config import *
 from board import Board
 from ia_clasica import elegir_movimiento_clasico
-from ia_adaptativa import cargar_modelo, predecir_movimiento
+from ia_adaptativa import cargar_modelo, predecir_movimiento, actualizar_modelo
 from puntuaciones import cargar_ranking, guardar_puntaje
 
 pygame.init()
@@ -23,8 +23,8 @@ pygame.key.set_repeat(200, 50)
 
 # Configuración global
 modo_juego = "clasico"
-dificultad_ia = "normal"       # "facil", "normal", "dificil"
-velocidad_subida = "normal"    # "lento", "normal", "rapido"
+dificultad_ia = "normal"
+velocidad_subida = "normal"
 
 jugador = None
 ia = None
@@ -40,8 +40,7 @@ combo_ia = 0
 ultima_cadena_jugador = 0
 ultima_cadena_ia = 0
 
-# Tiempo base de subida según velocidad
-TIEMPOS_BASE = {"lento": 6000, "normal": 3000, "rapido": 1500}
+TIEMPOS_BASE = {"lento": 5000, "normal": 3000, "rapido": 1500}
 tiempo_subida = TIEMPOS_BASE[velocidad_subida]
 ultimo_rise = pygame.time.get_ticks()
 
@@ -52,6 +51,9 @@ COLOR_FONDO = (18, 18, 28)
 COLOR_LINEAS_GUIA = (55, 55, 70)
 ALPHA_BRILLO = 60
 
+# ------------------------------------------------------------
+# Funciones de dibujo y utilidad
+# ------------------------------------------------------------
 def crear_fondo():
     surf = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA))
     for y in range(ALTO_VENTANA):
@@ -81,9 +83,6 @@ class Particula:
 
 particulas = [Particula() for _ in range(50)]
 
-# ------------------------------------------------------------
-# Funciones de dibujo
-# ------------------------------------------------------------
 def dibujar_panel(superficie, color_idx, x, y, w, h):
     rect = pygame.Rect(x, y, w, h)
     if color_idx is None:
@@ -206,6 +205,25 @@ def dibujar_animaciones():
             animaciones[animaciones.index(anim)] = (tipo, datos, tiempo)
 
 # ------------------------------------------------------------
+# Pantalla breve de mensaje (para feedback de IA)
+# ------------------------------------------------------------
+def mostrar_mensaje_temporal(mensaje, duracion=1.5):
+    """Muestra un mensaje centrado durante unos segundos."""
+    pantalla.blit(fondo_estatico, (0,0))
+    overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
+    overlay.fill((0,0,0,180))
+    pantalla.blit(overlay, (0,0))
+    txt = fuente_grande.render(mensaje, True, (255,255,100))
+    pantalla.blit(txt, (ANCHO_VENTANA//2 - txt.get_width()//2, ALTO_VENTANA//2 - txt.get_height()//2))
+    pygame.display.flip()
+    tiempo_inicio = pygame.time.get_ticks()
+    while pygame.time.get_ticks() - tiempo_inicio < duracion * 1000:
+        for evento in pygame.event.get():
+            if evento.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+        reloj.tick(30)
+
+# ------------------------------------------------------------
 # Menú de pausa
 # ------------------------------------------------------------
 def menu_pausa():
@@ -229,28 +247,33 @@ def menu_pausa():
         instru = fuente.render("↑↓: Navegar  ENTER: Seleccionar  ESC: Volver", True, (150,150,150))
         pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
         for evento in pygame.event.get():
-            if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if evento.type == pygame.QUIT:
+                guardar_historial()
+                actualizar_modelo()
+                pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_ESCAPE: pausa = False
                 elif evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%4
                 elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%4
                 elif evento.key == pygame.K_RETURN:
                     if seleccion == 0: pausa = False
-                    elif seleccion == 1: reiniciar_partida(); pausa = False
-                    elif seleccion == 2: guardar_historial(); pausa = False; return "menu"
-                    elif seleccion == 3: guardar_historial(); pygame.quit(); sys.exit()
+                    elif seleccion == 1: guardar_historial(); actualizar_modelo(); reiniciar_partida(); pausa = False
+                    elif seleccion == 2: guardar_historial(); actualizar_modelo(); pausa = False; return "menu"
+                    elif seleccion == 3: guardar_historial(); actualizar_modelo(); pygame.quit(); sys.exit()
         pygame.display.flip()
         reloj.tick(30)
     return "juego"
 
 # ------------------------------------------------------------
-# Entrada de nombre
+# Entrada de nombre y ranking
 # ------------------------------------------------------------
 def ingresar_nombre(puntaje):
     nombre = ""
     while len(nombre) < 3:
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
+                guardar_historial()
+                actualizar_modelo()
                 pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
                 if evento.key >= pygame.K_a and evento.key <= pygame.K_z:
@@ -278,15 +301,14 @@ def ingresar_nombre(puntaje):
         reloj.tick(30)
     return nombre
 
-# ------------------------------------------------------------
-# Mostrar ranking
-# ------------------------------------------------------------
 def mostrar_ranking():
     ranking = cargar_ranking()
     esperando = True
     while esperando:
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
+                guardar_historial()
+                actualizar_modelo()
                 pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_ESCAPE or evento.key == pygame.K_RETURN:
@@ -311,12 +333,12 @@ def mostrar_ranking():
         reloj.tick(30)
 
 # ------------------------------------------------------------
-# Selección de dificultad (submenú para clásico)
+# Selección de dificultad IA
 # ------------------------------------------------------------
 def menu_dificultad():
     global dificultad_ia
     opciones = ["Fácil", "Normal", "Difícil"]
-    seleccion = 1  # normal por defecto
+    seleccion = 1
     while True:
         overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
         overlay.fill((0,0,0,180))
@@ -334,7 +356,10 @@ def menu_dificultad():
         instru = fuente.render("↑↓: Elegir   ENTER: Confirmar", True, (150,150,150))
         pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
         for evento in pygame.event.get():
-            if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if evento.type == pygame.QUIT:
+                guardar_historial()
+                actualizar_modelo()
+                pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%3
                 elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%3
@@ -350,7 +375,10 @@ def menu_dificultad():
 def procesar_eventos():
     global jugador, ia, turno_ia_timer, partida_terminada, ganador, historial_jugador, pausa
     for evento in pygame.event.get():
-        if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
+        if evento.type == pygame.QUIT:
+            guardar_historial()
+            actualizar_modelo()
+            pygame.quit(); sys.exit()
         if evento.type == pygame.KEYDOWN:
             if evento.key == pygame.K_ESCAPE and not partida_terminada:
                 pausa = True; continue
@@ -362,10 +390,13 @@ def procesar_eventos():
             elif evento.key == pygame.K_UP: jugador.mover_cursor(0, -1)
             elif evento.key == pygame.K_DOWN: jugador.mover_cursor(0, 1)
             elif evento.key == pygame.K_SPACE:
+                estado_vector = jugador.estado_a_vector()
                 if jugador.intercambiar():
                     destello_x = MARGEN_LATERAL + jugador.cursor_x * TAM_CELDA + TAM_CELDA//2
                     destello_y = MARGEN_SUPERIOR + (jugador.cursor_y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA//2
                     animaciones.append(('destello', (destello_x, destello_y, 12), 15))
+                    # Guardar ejemplo siempre (en todos los modos)
+                    historial_jugador.append((estado_vector, jugador.cursor_x))
                     turno_ia_timer = 0
 
 def actualizar_mundo(dt):
@@ -423,10 +454,13 @@ def actualizar_ia():
         if modo_juego == "clasico":
             accion = elegir_movimiento_clasico(copia_logica, dificultad_ia)
         else:
-            try:
-                modelo = cargar_modelo()
+            modelo = cargar_modelo()
+            if modelo:
                 accion = predecir_movimiento(copia_logica, modelo)
-            except: accion = random.randint(0, ANCHO_TABLERO-2)
+                if accion is None:
+                    accion = random.randint(0, ANCHO_TABLERO-2)
+            else:
+                accion = random.randint(0, ANCHO_TABLERO-2)
         ia.intercambiar(accion)
 
 def actualizar_subida():
@@ -438,7 +472,6 @@ def actualizar_subida():
         if modo_juego != "solitario":
             ia.recibir_basura(1)
         ultimo_rise = ahora
-        # Aceleración más agresiva en rápido
         if velocidad_subida == "rapido":
             tiempo_subida = max(300, tiempo_subida - 80)
         elif velocidad_subida == "normal":
@@ -447,13 +480,19 @@ def actualizar_subida():
             tiempo_subida = max(800, tiempo_subida - 30)
 
 def guardar_historial():
+    global historial_jugador
     if historial_jugador:
         with open(ARCHIVO_DATOS, 'a', newline='') as f:
             escritor = csv.writer(f)
             for estado, accion in historial_jugador:
                 escritor.writerow(list(estado) + [accion])
-        print(f"Guardados {len(historial_jugador)} ejemplos.")
+        num = len(historial_jugador)
+        print(f"Guardados {num} ejemplos en {ARCHIVO_DATOS}.")
+        if jugador is not None:
+            mostrar_texto_temporal(f"¡{num} ejemplos guardados!", 10, 10, duracion=90, color=(0,255,0), tamaño=20)
         historial_jugador.clear()
+    else:
+        print("No hay ejemplos para guardar.")
 
 def reiniciar_partida():
     global jugador, ia, partida_terminada, ganador, historial_jugador
@@ -465,7 +504,7 @@ def reiniciar_partida():
         ia = Board(fisica=True)
     else:
         ia = None
-    partida_terminada = False; ganador = None; historial_jugador = []
+    partida_terminada = False; ganador = None
     puntuacion_jugador = 0; puntuacion_ia = 0
     combo_jugador = 0; combo_ia = 0
     ultima_cadena_jugador = 0; ultima_cadena_ia = 0
@@ -511,7 +550,7 @@ def dibujar_interfaz(proporcion=1.0):
     dibujar_animaciones()
 
 # ------------------------------------------------------------
-# Menú principal mejorado
+# Menú principal
 # ------------------------------------------------------------
 def menu_seleccion_modo():
     global modo_juego, velocidad_subida, dificultad_ia
@@ -543,27 +582,33 @@ def menu_seleccion_modo():
         instru = fuente.render("↑↓: Elegir   ENTER: Confirmar   ←→: Cambiar velocidad", True, (150,150,150))
         pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
         for evento in pygame.event.get():
-            if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if evento.type == pygame.QUIT:
+                guardar_historial()
+                actualizar_modelo()
+                pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%len(opciones)
                 elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%len(opciones)
                 elif evento.key == pygame.K_RETURN:
-                    if seleccion == 0:          # Clásico
+                    if seleccion == 0:
                         menu_dificultad()
                         modo_juego = "clasico"; return
-                    elif seleccion == 1:        # Adaptativo
+                    elif seleccion == 1:
                         modo_juego = "adaptativo"; return
-                    elif seleccion == 2:        # Solitario
+                    elif seleccion == 2:
                         modo_juego = "solitario"; return
-                    elif seleccion == 3:        # Récords
+                    elif seleccion == 3:
                         mostrar_ranking()
-                    elif seleccion == 4:        # Velocidad (se puede cambiar con ← → pero también al pulsar ENTER rotamos)
-                        pass  # ya se cambia con izq/der
-                    elif seleccion == 5:        # Salir
+                    elif seleccion == 4:
+                        pass
+                    elif seleccion == 5:
+                        guardar_historial()
+                        actualizar_modelo()
                         pygame.quit(); sys.exit()
                 elif evento.key == pygame.K_ESCAPE:
+                    guardar_historial()
+                    actualizar_modelo()
                     pygame.quit(); sys.exit()
-                # Cambiar velocidad con flechas izquierda/derecha cuando esté seleccionada la opción
                 if seleccion == 4:
                     if evento.key == pygame.K_LEFT or evento.key == pygame.K_RIGHT:
                         if velocidad_subida == "lento":
@@ -572,7 +617,6 @@ def menu_seleccion_modo():
                             velocidad_subida = "rapido" if evento.key == pygame.K_RIGHT else "lento"
                         elif velocidad_subida == "rapido":
                             velocidad_subida = "lento" if evento.key == pygame.K_RIGHT else "normal"
-                        # Actualizar texto de la opción
                         opciones[4] = f"Velocidad: {velocidad_subida.capitalize()}"
         pygame.display.flip()
         dt = reloj_local.tick(60)/1000.0
@@ -584,7 +628,6 @@ def main():
     global pausa, partida_terminada, ganador, modo_juego, puntuacion_jugador, tiempo_subida, velocidad_subida
     while True:
         menu_seleccion_modo()
-        # Asegurar que el tiempo base se actualice según la velocidad configurada
         tiempo_subida = TIEMPOS_BASE[velocidad_subida]
         reiniciar_partida()
         dt = 0.0
@@ -610,14 +653,23 @@ def main():
                 esperando = True
                 while esperando:
                     for evento in pygame.event.get():
-                        if evento.type == pygame.QUIT: pygame.quit(); sys.exit()
+                        if evento.type == pygame.QUIT:
+                            guardar_historial()
+                            actualizar_modelo()
+                            pygame.quit(); sys.exit()
                         if evento.type == pygame.KEYDOWN:
                             if evento.key == pygame.K_RETURN or evento.key == pygame.K_r:
                                 esperando = False
                     reloj.tick(30)
                 break
 
+        # Actualizar la IA adaptativa con los nuevos datos
         guardar_historial()
+        if modo_juego == "adaptativo" or modo_juego == "solitario":
+            mostrar_mensaje_temporal("Actualizando IA...", 1.0)
+            actualizar_modelo()
+            mostrar_mensaje_temporal("¡IA actualizada!", 1.5)
+
         if modo_juego == "solitario" and partida_terminada and puntuacion_jugador > 0:
             ranking = cargar_ranking()
             if len(ranking) < 10 or puntuacion_jugador > ranking[-1]['puntaje']:

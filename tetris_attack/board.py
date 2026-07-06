@@ -135,6 +135,33 @@ class Board:
                     grupos.update([(r, c), (r+1, c), (r+2, c)])
         return grupos
 
+
+    def puede_intercambiar(self, x=None):
+        """
+        Verifica si es posible intercambiar en la posición actual del cursor (o en la columna x).
+        No modifica el tablero.
+        """
+        if x is not None:
+            cx = x
+            # No recolocamos cursor_y porque no modificamos, solo comprobamos
+            for fila in range(FILAS_TOTALES-1, -1, -1):
+                if self.matriz[fila][cx] is not None or self.matriz[fila][cx+1] is not None:
+                    # Encontramos la fila más baja con al menos un panel
+                    cy = fila
+                    break
+            else:
+                return False
+        else:
+            cx = self.cursor_x
+            cy = self.cursor_y
+        if cx < 0 or cx >= ANCHO_TABLERO - 1:
+            return False
+        if cy < 0 or cy >= FILAS_TOTALES:
+            return False
+        p1 = self.matriz[cy][cx]
+        p2 = self.matriz[cy][cx+1]
+        return not (p1 is None and p2 is None)
+
     # ------------------------------------------------------------
     # Gravedad continua (aplicada en cada frame en estado 'normal')
     # ------------------------------------------------------------

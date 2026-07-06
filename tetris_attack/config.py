@@ -1,4 +1,7 @@
 # config.py
+import os
+
+
 ANCHO_TABLERO = 6
 ALTO_VISIBLE = 12
 FILAS_TOTALES = 16
@@ -24,5 +27,10 @@ FPS = 60
 
 IA_DELAY = 15
 
-ARCHIVO_DATOS = "datos_jugador.csv"
-ARCHIVO_MODELO = "modelo_adaptativo.pkl"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+ARCHIVO_DATOS = os.path.join(BASE_DIR, "datos_jugador.csv")
+ARCHIVO_MODELO = os.path.join(BASE_DIR, "modelo_adaptativo.pkl")
+ARCHIVO_RANKING = os.path.join(BASE_DIR, "ranking.json")
+
+
