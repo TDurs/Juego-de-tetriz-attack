@@ -2,13 +2,7 @@
 import random
 import time
 from config import ANCHO_TABLERO
-
-def evaluar(board):
-    copia = board.copiar()
-    puntos, cadenas, _ = copia.resolver_matches()
-    altura_max = max(copia.altura_columna(c) for c in range(ANCHO_TABLERO))
-    agujeros = copia.contar_agujeros()
-    return puntos + 20 * cadenas - 15 * altura_max - 30 * agujeros
+from evaluacion import evaluar
 
 def minimax(board, profundidad, alpha, beta, maximizando):
     if profundidad == 0 or board.esta_perdido():
@@ -35,7 +29,6 @@ def minimax(board, profundidad, alpha, beta, maximizando):
         return evaluar(board), None
 
 def elegir_movimiento_clasico(board, dificultad="normal"):
-    # Configuración según dificultad
     if dificultad == "facil":
         tiempo_limite = 0.2
         profundidad_max = 1
@@ -49,7 +42,6 @@ def elegir_movimiento_clasico(board, dificultad="normal"):
         profundidad_max = 4
         prob_aleatorio = 0.0
 
-    # Posibilidad de movimiento aleatorio en fácil
     if random.random() < prob_aleatorio:
         posibles = [x for x in range(ANCHO_TABLERO-1) if board.copiar().intercambiar(x)]
         return random.choice(posibles) if posibles else 0

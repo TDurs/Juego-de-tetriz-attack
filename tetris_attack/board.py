@@ -5,38 +5,36 @@ from config import ANCHO_TABLERO, ALTO_VISIBLE, FILAS_TOTALES, NUM_COLORES, TAM_
 from utils import generar_panel
 
 class Panel:
-    """Un panel individual con física de caída continua."""
-    __slots__ = ('color', 'offset_y', 'velocidad')
+    __slots__ = ('color', 'offset_y', 'velocidad', 'cayendo')
     def __init__(self, color):
         self.color = color
-        self.offset_y = 0.0      # desplazamiento en píxeles desde la parte superior de la celda
-        self.velocidad = 0.0     # píxeles por segundo hacia abajo
+        self.offset_y = 0.0
+        self.velocidad = 0.0
+        self.cayendo = False
 
     def copiar(self):
-        """Copia solo el color, sin física."""
-        return Panel(self.color)
+        p = Panel(self.color)
+        p.offset_y = self.offset_y
+        p.velocidad = self.velocidad
+        p.cayendo = self.cayendo
+        return p
 
 class Board:
     def __init__(self, fisica=True):
         self.fisica = fisica
-        # matriz de Panel o None
-        self.matriz = [[None] * ANCHO_TABLERO for _ in range(FILAS_TOTALES)]
+        self.matriz = [[None]*ANCHO_TABLERO for _ in range(FILAS_TOTALES)]
         self.cursor_x = ANCHO_TABLERO // 2
         self.cursor_y = FILAS_TOTALES - 1
-        # Máquina de estados solo para pausa de matches
-        self.estado = 'normal'          # 'normal' o 'pausa'
+        self.basura_pendiente = 0
+        self.estado = 'normal'
         self.timer_estado = 0
-        self.pausa_duracion = 12        # frames de pausa antes de eliminar
-        self.grupos_a_eliminar = set()  # coordenadas (fila, col) a eliminar tras la pausa
-        # Parámetros físicos
-        self.gravedad = 1800.0          # píxeles/s²
-        self.vel_max = 900.0            # píxeles/s
+        self.pausa_duracion = 12
+        self.grupos_a_eliminar = set()
+        self.gravedad = 1800.0
+        self.vel_max = 900.0
         self.llenar_inicial(4)
         self._ajustar_cursor()
 
-    # ------------------------------------------------------------
-    # Inicialización y copia
-    # ------------------------------------------------------------
     def llenar_inicial(self, filas_iniciales=4):
         inicio = FILAS_TOTALES - filas_iniciales
         for fila in range(inicio, FILAS_TOTALES):
@@ -57,7 +55,6 @@ class Board:
         return p.color if p else None
 
     def copiar(self):
-        """Copia lógica sin física (para la IA)."""
         nuevo = Board(fisica=False)
         for f in range(FILAS_TOTALES):
             for c in range(ANCHO_TABLERO):
@@ -67,9 +64,6 @@ class Board:
         nuevo.cursor_y = self.cursor_y
         return nuevo
 
-    # ------------------------------------------------------------
-    # Movimiento del cursor
-    # ------------------------------------------------------------
     def _posicion_es_valida(self, fila, col):
         if col < 0 or col >= ANCHO_TABLERO - 1:
             return False
@@ -77,6 +71,32 @@ class Board:
             return False
         p1 = self.matriz[fila][col]
         p2 = self.matriz[fila][col+1]
+        return not (p1 is None and p2 is None)
+
+    def puede_intercambiar(self, x=None):
+        """
+        Verifica si es posible intercambiar en la posición actual del cursor (o en la columna x).
+        No modifica el tablero.
+        """
+        if x is not None:
+            cx = x
+            # Buscar la primera fila (de abajo hacia arriba) que tenga al menos un panel en cx o cx+1
+            for fila in range(FILAS_TOTALES-1, -1, -1):
+                if self.matriz[fila][cx] is not None or self.matriz[fila][cx+1] is not None:
+                    cy = fila
+                    break
+            else:
+                return False
+        else:
+            cx = self.cursor_x
+            cy = self.cursor_y
+
+        if cx < 0 or cx >= ANCHO_TABLERO - 1:
+            return False
+        if cy < 0 or cy >= FILAS_TOTALES:
+            return False
+        p1 = self.matriz[cy][cx]
+        p2 = self.matriz[cy][cx+1]
         return not (p1 is None and p2 is None)
 
     def _ajustar_cursor(self):
@@ -105,9 +125,6 @@ class Board:
             if limite_sup <= nueva_y <= limite_inf:
                 self.cursor_y = nueva_y
 
-    # ------------------------------------------------------------
-    # Intercambio
-    # ------------------------------------------------------------
     def intercambiar(self, x=None):
         if x is not None:
             self.cursor_x = x
@@ -117,10 +134,21 @@ class Board:
             return False
         self.matriz[cy][cx], self.matriz[cy][cx+1] = self.matriz[cy][cx+1], self.matriz[cy][cx]
         return True
+    
+    def intercambiar_en(self, x, y):
+        """
+        Intercambia las dos celdas en la columna x y la fila y.
+        Retorna True si el intercambio fue válido.
+        """
+        if x is None or y is None:
+            return False
+        self.cursor_x = x
+        self.cursor_y = y
+        if not self._posicion_es_valida(y, x):
+            return False
+        self.matriz[y][x], self.matriz[y][x+1] = self.matriz[y][x+1], self.matriz[y][x]
+        return True
 
-    # ------------------------------------------------------------
-    # Búsqueda de grupos
-    # ------------------------------------------------------------
     def _buscar_grupos(self):
         grupos = set()
         for r in range(FILAS_TOTALES):
@@ -135,89 +163,9 @@ class Board:
                     grupos.update([(r, c), (r+1, c), (r+2, c)])
         return grupos
 
-
-    def puede_intercambiar(self, x=None):
-        """
-        Verifica si es posible intercambiar en la posición actual del cursor (o en la columna x).
-        No modifica el tablero.
-        """
-        if x is not None:
-            cx = x
-            # No recolocamos cursor_y porque no modificamos, solo comprobamos
-            for fila in range(FILAS_TOTALES-1, -1, -1):
-                if self.matriz[fila][cx] is not None or self.matriz[fila][cx+1] is not None:
-                    # Encontramos la fila más baja con al menos un panel
-                    cy = fila
-                    break
-            else:
-                return False
-        else:
-            cx = self.cursor_x
-            cy = self.cursor_y
-        if cx < 0 or cx >= ANCHO_TABLERO - 1:
-            return False
-        if cy < 0 or cy >= FILAS_TOTALES:
-            return False
-        p1 = self.matriz[cy][cx]
-        p2 = self.matriz[cy][cx+1]
-        return not (p1 is None and p2 is None)
-
-    # ------------------------------------------------------------
-    # Gravedad continua (aplicada en cada frame en estado 'normal')
-    # ------------------------------------------------------------
-    def _aplicar_gravedad(self, dt):
-        """Recorre todas las columnas de abajo hacia arriba aplicando gravedad a cada panel."""
-        for c in range(ANCHO_TABLERO):
-            # Recorremos desde la fila más baja (la última) hacia arriba
-            for r in range(FILAS_TOTALES - 1, 0, -1):
-                p = self.matriz[r-1][c]   # panel que está encima de la celda r
-                if p is None:
-                    continue
-                # Si la celda de abajo (r) está vacía, el panel puede caer
-                if self.matriz[r][c] is None:
-                    p.velocidad += self.gravedad * dt
-                    if p.velocidad > self.vel_max:
-                        p.velocidad = self.vel_max
-                    p.offset_y += p.velocidad * dt
-
-                    # Mientras haya suficiente offset para bajar una celda completa y el destino siga vacío
-                    while p.offset_y >= TAM_CELDA and r < FILAS_TOTALES and self.matriz[r][c] is None:
-                        self.matriz[r][c] = p
-                        self.matriz[r-1][c] = None
-                        p.offset_y -= TAM_CELDA
-                        r += 1
-                        if r == FILAS_TOTALES:
-                            break
-                    # Si después de moverse ya no cabe o chocó, detener
-                    if r < FILAS_TOTALES and self.matriz[r][c] is not None:
-                        p.offset_y = 0.0
-                        p.velocidad = 0.0
-                else:
-                    # No hay espacio debajo, detener cualquier movimiento residual
-                    if p.velocidad != 0.0 or p.offset_y != 0.0:
-                        p.velocidad = 0.0
-                        p.offset_y = 0.0
-
-    # ------------------------------------------------------------
-    # Estabilidad (ningún panel se está moviendo)
-    # ------------------------------------------------------------
-    def esta_estable(self):
-        """True si ningún panel tiene velocidad ni desplazamiento."""
-        for r in range(FILAS_TOTALES):
-            for c in range(ANCHO_TABLERO):
-                p = self.matriz[r][c]
-                if p and (p.velocidad != 0.0 or p.offset_y != 0.0):
-                    return False
-        return True
-
-    # ------------------------------------------------------------
-    # Actualización principal (llamada cada frame con dt en segundos)
-    # ------------------------------------------------------------
     def update(self, dt):
         if self.estado == 'normal':
-            # Aplicar gravedad a todos los paneles que puedan caer
             self._aplicar_gravedad(dt)
-            # Buscar matches después de la caída
             grupos = self._buscar_grupos()
             if grupos:
                 self.grupos_a_eliminar = grupos
@@ -226,16 +174,46 @@ class Board:
         elif self.estado == 'pausa':
             self.timer_estado -= 1
             if self.timer_estado <= 0:
-                # Eliminar los paneles marcados
                 for (r, c) in self.grupos_a_eliminar:
                     self.matriz[r][c] = None
                 self.grupos_a_eliminar.clear()
-                # Volver a normal; la gravedad actuará inmediatamente en el siguiente frame
                 self.estado = 'normal'
 
-    # ------------------------------------------------------------
-    # Basura
-    # ------------------------------------------------------------
+    def _aplicar_gravedad(self, dt):
+        for c in range(ANCHO_TABLERO):
+            for r in range(FILAS_TOTALES - 1, 0, -1):
+                p = self.matriz[r-1][c]
+                if p is None:
+                    continue
+                if self.matriz[r][c] is None:
+                    p.velocidad += self.gravedad * dt
+                    if p.velocidad > self.vel_max:
+                        p.velocidad = self.vel_max
+                    p.offset_y += p.velocidad * dt
+
+                    while p.offset_y >= TAM_CELDA and r < FILAS_TOTALES and self.matriz[r][c] is None:
+                        self.matriz[r][c] = p
+                        self.matriz[r-1][c] = None
+                        p.offset_y -= TAM_CELDA
+                        r += 1
+                        if r == FILAS_TOTALES:
+                            break
+                    if r < FILAS_TOTALES and self.matriz[r][c] is not None:
+                        p.offset_y = 0.0
+                        p.velocidad = 0.0
+                else:
+                    if p.velocidad != 0.0 or p.offset_y != 0.0:
+                        p.velocidad = 0.0
+                        p.offset_y = 0.0
+
+    def esta_estable(self):
+        for r in range(FILAS_TOTALES):
+            for c in range(ANCHO_TABLERO):
+                p = self.matriz[r][c]
+                if p and (p.velocidad != 0.0 or p.offset_y != 0.0):
+                    return False
+        return True
+
     def recibir_basura(self, lineas):
         for _ in range(lineas):
             fila_basura = [generar_panel() for _ in range(ANCHO_TABLERO)]
@@ -243,14 +221,15 @@ class Board:
             fila_basura[hueco] = None
             for r in range(FILAS_TOTALES - 1):
                 self.matriz[r] = self.matriz[r+1]
-            self.matriz[FILAS_TOTALES - 1] = [
-                Panel(c) if c is not None else None for c in fila_basura
-            ]
-        # Si estábamos en normal, la gravedad se encarga de los huecos en el próximo update
+            self.matriz[FILAS_TOTALES - 1] = [Panel(c) if c is not None else None for c in fila_basura]
 
-    # ------------------------------------------------------------
-    # Método para la IA: resolución instantánea sin física
-    # ------------------------------------------------------------
+    def esta_perdido(self):
+        limite = FILAS_TOTALES - ALTO_VISIBLE
+        for c in range(ANCHO_TABLERO):
+            if self.matriz[limite][c] is not None:
+                return True
+        return False
+
     def resolver_matches(self):
         puntos = 0
         cadenas = 0
@@ -277,16 +256,6 @@ class Board:
                     self.matriz[FILAS_TOTALES-1-r][c] = columna[r]
                 else:
                     self.matriz[FILAS_TOTALES-1-r][c] = None
-
-    # ------------------------------------------------------------
-    # Utilidades
-    # ------------------------------------------------------------
-    def esta_perdido(self):
-        limite = FILAS_TOTALES - ALTO_VISIBLE
-        for c in range(ANCHO_TABLERO):
-            if self.matriz[limite][c] is not None:
-                return True
-        return False
 
     def altura_columna(self, col):
         for r in range(FILAS_TOTALES):

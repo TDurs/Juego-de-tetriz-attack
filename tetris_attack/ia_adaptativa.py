@@ -3,15 +3,17 @@ import numpy as np
 import pickle
 import os
 import pandas as pd
+import time
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import train_test_split
-from config import ARCHIVO_MODELO, ANCHO_TABLERO, ARCHIVO_DATOS
+from config import ARCHIVO_MODELO, ANCHO_TABLERO, ARCHIVO_DATOS, FILAS_TOTALES
+from evaluacion import evaluar
 
 MAX_EJEMPLOS = 5000
 
 def cargar_modelo():
     if not os.path.exists(ARCHIVO_MODELO):
-        print("⚠️ Modelo adaptativo no encontrado. La IA usará movimientos aleatorios.")
+        print("⚠️ Modelo adaptativo no encontrado.")
         return None
     try:
         with open(ARCHIVO_MODELO, 'rb') as f:
@@ -19,19 +21,90 @@ def cargar_modelo():
         print("✅ Modelo adaptativo cargado correctamente.")
         return modelo
     except Exception as e:
-        print(f"❌ Error al cargar el modelo: {e}. Se usarán movimientos aleatorios.")
+        print(f"❌ Error al cargar el modelo: {e}.")
         return None
 
 def predecir_movimiento(board, modelo):
+    """Predice la columna según el modelo. Retorna None si no es válida."""
     if modelo is None:
         return None
     X = board.estado_a_vector().reshape(1, -1)
     pred = modelo.predict(X)[0]
-    # Verificar si el movimiento predicho es legal (sin modificar el tablero)
     if board.puede_intercambiar(pred):
         return pred
-    # Si no, devolver None para que el llamador use fallback
     return None
+
+def _mejor_fila_para_columna(board, x):
+    """
+    Para una columna x, prueba todas las filas donde el intercambio sea legal
+    y retorna (fila, valor_heurístico) de la mejor opción.
+    """
+    mejor_valor = -float('inf')
+    mejor_fila = None
+    copia_base = board.copiar()
+    for y in range(FILAS_TOTALES):
+        if copia_base._posicion_es_valida(y, x):
+            copia = copia_base.copiar()
+            if copia.intercambiar_en(x, y):
+                copia.resolver_matches()
+                valor = evaluar(copia)
+                if valor > mejor_valor:
+                    mejor_valor = valor
+                    mejor_fila = y
+    return mejor_fila, mejor_valor
+
+def elegir_movimiento_adaptativo(board, modelo):
+    print(f"DEBUG: modelo es None? {modelo is None}")
+    """
+    Retorna una tupla (columna, fila) con la mejor jugada,
+    combinando el modelo supervisado y búsqueda heurística.
+    """
+    # --- Intento con el modelo supervisado ---
+    if modelo is not None:
+        columna = predecir_movimiento(board, modelo)
+        if columna is not None:
+            fila, valor = _mejor_fila_para_columna(board, columna)
+            if fila is not None:
+                valor_actual = evaluar(board)
+                if valor > valor_actual * 0.8:
+                    print(f"🤖 Movimiento según modelo: columna {columna}, fila {fila} (valor {valor})")
+                    return (columna, fila)
+                else:
+                    print(f"⚠️ Movimiento del modelo ({columna}) es malo (valor {valor}). Buscando alternativa...")
+            else:
+                print(f"⚠️ No hay fila válida para columna {columna}.")
+
+    # --- Búsqueda heurística completa (explora columna x fila) ---
+    print("🔍 Realizando búsqueda heurística...")
+    return _busqueda_rapida(board)
+
+def _busqueda_rapida(board):
+    """Prueba todas las combinaciones (columna, fila) y elige la mejor."""
+    mejor_x = None
+    mejor_y = None
+    mejor_valor = -float('inf')
+    inicio = time.time()
+
+    for x in range(ANCHO_TABLERO - 1):
+        for y in range(FILAS_TOTALES):
+            copia = board.copiar()
+            if copia.intercambiar_en(x, y):
+                copia.resolver_matches()
+                valor = evaluar(copia)
+                if valor > mejor_valor:
+                    mejor_valor = valor
+                    mejor_x = x
+                    mejor_y = y
+        # Limitar tiempo total a 0.3 s
+        if time.time() - inicio > 0.3:
+            break
+
+    if mejor_x is not None:
+        print(f"🎯 Mejor movimiento heurístico: columna {mejor_x}, fila {mejor_y} (valor {mejor_valor})")
+        return (mejor_x, mejor_y)
+    else:
+        print("❌ No se encontró ningún movimiento legal.")
+        return (None, None)
 
 def entrenar_modelo():
     if not os.path.exists(ARCHIVO_DATOS):

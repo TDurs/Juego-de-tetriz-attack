@@ -6,8 +6,9 @@ import csv
 from config import *
 from board import Board
 from ia_clasica import elegir_movimiento_clasico
-from ia_adaptativa import cargar_modelo, predecir_movimiento, actualizar_modelo
+from ia_adaptativa import cargar_modelo, elegir_movimiento_adaptativo, actualizar_modelo
 from puntuaciones import cargar_ranking, guardar_puntaje
+
 
 pygame.init()
 pantalla = pygame.display.set_mode((ANCHO_VENTANA, ALTO_VENTANA))
@@ -28,7 +29,9 @@ velocidad_subida = "normal"
 
 jugador = None
 ia = None
+modelo_adaptativo = None      # se carga una vez por partida
 turno_ia_timer = 0
+ia_accion_pendiente = None    # columna donde la IA va a intercambiar (para dibujar cursor)
 partida_terminada = False
 ganador = None
 historial_jugador = []
@@ -131,6 +134,7 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
             y = base_y + p.offset_y
             dibujar_panel(pantalla, color, x, y, TAM_CELDA-6, TAM_CELDA-6)
 
+    # Cursor del jugador (siempre visible)
     if es_jugador:
         cx, cy = board.cursor_x, board.cursor_y
         if inicio_fila <= cy < FILAS_TOTALES:
@@ -150,6 +154,27 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
                 [(centro_x-6, cy_pix-6), (centro_x+6, cy_pix-6), (centro_x, cy_pix-12)])
             pygame.draw.polygon(pantalla, color_borde,
                 [(centro_x-6, cy_pix+TAM_CELDA+6), (centro_x+6, cy_pix+TAM_CELDA+6), (centro_x, cy_pix+TAM_CELDA+12)])
+
+    # Cursor de la IA (solo si hay una acción pendiente)
+    if not es_jugador and ia_accion_pendiente is not None and board is ia:
+        # Mostrar un cursor suave en la columna que va a intercambiar
+        x_col = ia_accion_pendiente
+        # Buscamos la fila más baja con paneles en esa columna
+        for fila in range(FILAS_TOTALES-1, -1, -1):
+            if board.matriz[fila][x_col] is not None or board.matriz[fila][x_col+1] is not None:
+                cy_ia = fila
+                break
+        else:
+            cy_ia = FILAS_TOTALES - 1
+        if inicio_fila <= cy_ia < FILAS_TOTALES:
+            fila_vis = cy_ia - inicio_fila
+            cx_pix = offset_x + x_col * TAM_CELDA
+            cy_pix = offset_y + fila_vis * TAM_CELDA
+            cursor_rect = pygame.Rect(cx_pix, cy_pix, TAM_CELDA*2, TAM_CELDA)
+            # Cursor blanco semitransparente
+            cursor_surf = pygame.Surface(cursor_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(cursor_surf, (255,255,255,100), cursor_surf.get_rect(), 3, border_radius=4)
+            pantalla.blit(cursor_surf, cursor_rect)
 
     if not partida_terminada:
         barra_rect = pygame.Rect(offset_x, offset_y - 18, ANCHO_TABLERO*TAM_CELDA, 10)
@@ -204,11 +229,7 @@ def dibujar_animaciones():
         else:
             animaciones[animaciones.index(anim)] = (tipo, datos, tiempo)
 
-# ------------------------------------------------------------
-# Pantalla breve de mensaje (para feedback de IA)
-# ------------------------------------------------------------
 def mostrar_mensaje_temporal(mensaje, duracion=1.5):
-    """Muestra un mensaje centrado durante unos segundos."""
     pantalla.blit(fondo_estatico, (0,0))
     overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
     overlay.fill((0,0,0,180))
@@ -224,7 +245,7 @@ def mostrar_mensaje_temporal(mensaje, duracion=1.5):
         reloj.tick(30)
 
 # ------------------------------------------------------------
-# Menú de pausa
+# Menús (sin cambios excepto en los cierres donde se actualiza el modelo)
 # ------------------------------------------------------------
 def menu_pausa():
     global pausa
@@ -264,9 +285,6 @@ def menu_pausa():
         reloj.tick(30)
     return "juego"
 
-# ------------------------------------------------------------
-# Entrada de nombre y ranking
-# ------------------------------------------------------------
 def ingresar_nombre(puntaje):
     nombre = ""
     while len(nombre) < 3:
@@ -332,9 +350,6 @@ def mostrar_ranking():
         pygame.display.flip()
         reloj.tick(30)
 
-# ------------------------------------------------------------
-# Selección de dificultad IA
-# ------------------------------------------------------------
 def menu_dificultad():
     global dificultad_ia
     opciones = ["Fácil", "Normal", "Difícil"]
@@ -395,7 +410,6 @@ def procesar_eventos():
                     destello_x = MARGEN_LATERAL + jugador.cursor_x * TAM_CELDA + TAM_CELDA//2
                     destello_y = MARGEN_SUPERIOR + (jugador.cursor_y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA//2
                     animaciones.append(('destello', (destello_x, destello_y, 12), 15))
-                    # Guardar ejemplo siempre (en todos los modos)
                     historial_jugador.append((estado_vector, jugador.cursor_x))
                     turno_ia_timer = 0
 
@@ -444,24 +458,32 @@ def actualizar_mundo(dt):
             ganador = "Jugador"
 
 def actualizar_ia():
-    global ia, turno_ia_timer
+    global ia, turno_ia_timer, modelo_adaptativo, ia_accion_pendiente
     if modo_juego == "solitario" or partida_terminada or pausa:
         return
     turno_ia_timer += 1
     if turno_ia_timer >= IA_DELAY:
         turno_ia_timer = 0
         copia_logica = ia.copiar()
+
         if modo_juego == "clasico":
             accion = elegir_movimiento_clasico(copia_logica, dificultad_ia)
-        else:
-            modelo = cargar_modelo()
-            if modelo:
-                accion = predecir_movimiento(copia_logica, modelo)
-                if accion is None:
-                    accion = random.randint(0, ANCHO_TABLERO-2)
-            else:
-                accion = random.randint(0, ANCHO_TABLERO-2)
-        ia.intercambiar(accion)
+            if accion is not None:
+                exito = ia.intercambiar(accion)
+                if exito:
+                    # Destello rojo para la IA
+                    destello_x = (ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO*TAM_CELDA) + accion * TAM_CELDA + TAM_CELDA//2
+                    destello_y = MARGEN_SUPERIOR + (ia.cursor_y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA//2
+                    animaciones.append(('destello', (destello_x, destello_y, 12), 15))
+        else:   # adaptativo
+            resultado = elegir_movimiento_adaptativo(copia_logica, modelo_adaptativo)
+            if resultado != (None, None):
+                x, y = resultado
+                exito = ia.intercambiar_en(x, y)   # <-- nuevo método
+                if exito:
+                    destello_x = (ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO*TAM_CELDA) + x * TAM_CELDA + TAM_CELDA//2
+                    destello_y = MARGEN_SUPERIOR + (y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA//2
+                    animaciones.append(('destello', (destello_x, destello_y, 12), 15))
 
 def actualizar_subida():
     global ultimo_rise, tiempo_subida
@@ -498,6 +520,8 @@ def reiniciar_partida():
     global jugador, ia, partida_terminada, ganador, historial_jugador
     global puntuacion_jugador, puntuacion_ia, combo_jugador, combo_ia
     global ultimo_rise, tiempo_subida, ultima_cadena_jugador, ultima_cadena_ia
+    global modelo_adaptativo, ia_accion_pendiente
+
     guardar_historial()
     jugador = Board(fisica=True)
     if modo_juego != "solitario":
@@ -510,6 +534,12 @@ def reiniciar_partida():
     ultima_cadena_jugador = 0; ultima_cadena_ia = 0
     ultimo_rise = pygame.time.get_ticks()
     tiempo_subida = TIEMPOS_BASE[velocidad_subida]
+    ia_accion_pendiente = None
+
+    if modo_juego == "adaptativo":
+        modelo_adaptativo = cargar_modelo()
+    else:
+        modelo_adaptativo = None
 
 def dibujar_interfaz(proporcion=1.0):
     pantalla.blit(fondo_estatico, (0,0))
@@ -663,7 +693,6 @@ def main():
                     reloj.tick(30)
                 break
 
-        # Actualizar la IA adaptativa con los nuevos datos
         guardar_historial()
         if modo_juego == "adaptativo" or modo_juego == "solitario":
             mostrar_mensaje_temporal("Actualizando IA...", 1.0)
