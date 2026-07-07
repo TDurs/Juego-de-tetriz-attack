@@ -2,6 +2,7 @@
 import pygame
 import sys
 import random
+import math
 import csv
 from config import *
 from board import Board
@@ -9,15 +10,17 @@ from ia_clasica import elegir_movimiento_clasico
 from ia_adaptativa import cargar_modelo, elegir_movimiento_adaptativo, actualizar_modelo
 from puntuaciones import cargar_ranking, guardar_puntaje
 
-
 pygame.init()
 pantalla = pygame.display.set_mode((ANCHO_VENTANA, ALTO_VENTANA))
 pygame.display.set_caption("Tetris Attack - IA Híbrida")
-fuente = pygame.font.SysFont("Arial", 24)
-fuente_grande = pygame.font.SysFont("Arial", 38, bold=True)
-fuente_titulo = pygame.font.SysFont("Arial", 56, bold=True)
-fuente_hud = pygame.font.SysFont("Arial", 26, bold=True)
-fuente_nombre = pygame.font.SysFont("Arial", 64, bold=True)
+
+FUENTE_FAMILIA = "Segoe UI,Verdana,Arial"
+fuente = pygame.font.SysFont(FUENTE_FAMILIA, 22)
+fuente_grande = pygame.font.SysFont(FUENTE_FAMILIA, 20, bold=True)
+fuente_titulo = pygame.font.SysFont(FUENTE_FAMILIA, 50, bold=True)
+fuente_hud = pygame.font.SysFont(FUENTE_FAMILIA, 13, bold=True)
+fuente_nombre = pygame.font.SysFont(FUENTE_FAMILIA, 50, bold=True)
+fuente_chica = pygame.font.SysFont(FUENTE_FAMILIA, 12)
 reloj = pygame.time.Clock()
 
 pygame.key.set_repeat(200, 50)
@@ -29,9 +32,9 @@ velocidad_subida = "normal"
 
 jugador = None
 ia = None
-modelo_adaptativo = None      # se carga una vez por partida
+modelo_adaptativo = None
 turno_ia_timer = 0
-ia_accion_pendiente = None    # columna donde la IA va a intercambiar (para dibujar cursor)
+ia_accion_pendiente = None
 partida_terminada = False
 ganador = None
 historial_jugador = []
@@ -43,83 +46,150 @@ combo_ia = 0
 ultima_cadena_jugador = 0
 ultima_cadena_ia = 0
 
-TIEMPOS_BASE = {"lento": 5000, "normal": 3000, "rapido": 1500}
+TIEMPOS_BASE = {"lento": 6000, "normal": 3000, "rapido": 1500}
 tiempo_subida = TIEMPOS_BASE[velocidad_subida]
 ultimo_rise = pygame.time.get_ticks()
 
 animaciones = []
 pausa = False
 
-COLOR_FONDO = (18, 18, 28)
-COLOR_LINEAS_GUIA = (55, 55, 70)
-ALPHA_BRILLO = 60
+# ------------------------------------------------------------
+# Utilidades visuales (se mantienen igual que antes)
+# ------------------------------------------------------------
+def lerp_color(c1, c2, t):
+    t = max(0.0, min(1.0, t))
+    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
 
-# ------------------------------------------------------------
-# Funciones de dibujo y utilidad
-# ------------------------------------------------------------
+def fase(velocidad=1.0):
+    return (math.sin(pygame.time.get_ticks() * 0.001 * velocidad) + 1) / 2
+
+def dibujar_gradiente_vertical(superficie, rect, color_top, color_bottom, radius=0):
+    x, y, w, h = rect
+    if h <= 0: return
+    capa = pygame.Surface((w, h), pygame.SRCALPHA)
+    for i in range(h):
+        t = i / max(1, h - 1)
+        color = lerp_color(color_top, color_bottom, t) + (255,)
+        pygame.draw.line(capa, color, (0, i), (w, i))
+    if radius > 0:
+        mascara = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(mascara, (255, 255, 255, 255), (0, 0, w, h), border_radius=radius)
+        capa.blit(mascara, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+    superficie.blit(capa, (x, y))
+
+def panel_ui(superficie, rect, color=COLOR_PANEL_UI, borde=COLOR_BORDE_UI, radius=14, alpha=235, grosor=2):
+    x, y, w, h = rect
+    capa = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(capa, (*color, alpha), (0, 0, w, h), border_radius=radius)
+    pygame.draw.rect(capa, (*borde, 255), (0, 0, w, h), grosor, border_radius=radius)
+    superficie.blit(capa, (x, y))
+
+def glow_rect(superficie, rect, color, capas=4, radius=14, alpha_base=40):
+    x, y, w, h = rect
+    for i in range(capas, 0, -1):
+        expand = i * 4
+        a = max(0, alpha_base - i * 8)
+        halo = pygame.Surface((w + expand * 2, h + expand * 2), pygame.SRCALPHA)
+        pygame.draw.rect(halo, (*color, a), halo.get_rect(), border_radius=radius + expand)
+        superficie.blit(halo, (x - expand, y - expand))
+
 def crear_fondo():
     surf = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA))
-    for y in range(ALTO_VENTANA):
-        color = (15 + y//20, 15 + y//25, 25 + y//30)
-        pygame.draw.line(surf, color, (0, y), (ANCHO_VENTANA, y))
-    for x in range(0, ANCHO_VENTANA, 80):
-        for y in range(0, ALTO_VENTANA, 80):
-            pygame.draw.circle(surf, (30,30,40), (x, y), 1)
+    dibujar_gradiente_vertical(surf, (0, 0, ANCHO_VENTANA, ALTO_VENTANA), COLOR_FONDO_TOP, COLOR_FONDO_BOTTOM)
+    for x in range(0, ANCHO_VENTANA, 46):
+        for y in range(0, ALTO_VENTANA, 46):
+            pygame.draw.circle(surf, (60, 55, 90), (x, y), 1)
+    vign = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
+    for i in range(90):
+        alpha = int(90 * (i / 90) ** 2)
+        pygame.draw.rect(vign, (0, 0, 0, alpha), vign.get_rect().inflate(-i * 2, -i * 2), 2)
+    surf.blit(vign, (0, 0))
     return surf
 
 fondo_estatico = crear_fondo()
 
-class Particula:
+class Estrella:
     def __init__(self):
         self.x = random.randint(0, ANCHO_VENTANA)
-        self.y = random.randint(-50, -10)
-        self.vel = random.uniform(15, 50)
-        self.color = random.choice(COLORES_RGB)
-        self.tam = random.randint(1, 3)
+        self.y = random.randint(0, ALTO_VENTANA)
+        self.vel = random.uniform(8, 30)
+        self.tam = random.uniform(0.8, 2.2)
+        self.fase_ini = random.uniform(0, 6.28)
+        self.color = random.choice([(255, 255, 255), COLOR_ACENTO_2, COLOR_ACENTO])
+
     def update(self, dt):
         self.y += self.vel * dt
-        if self.y > ALTO_VENTANA + 20:
-            self.y = random.randint(-50, -10)
+        if self.y > ALTO_VENTANA + 5:
+            self.y = -5
             self.x = random.randint(0, ANCHO_VENTANA)
+
     def draw(self, surf):
-        pygame.draw.circle(surf, self.color, (int(self.x), int(self.y)), self.tam)
+        brillo = 0.35 + 0.65 * (math.sin(pygame.time.get_ticks() * 0.002 + self.fase_ini) + 1) / 2
+        color = tuple(int(c * brillo) for c in self.color)
+        pygame.draw.circle(surf, color, (int(self.x), int(self.y)), max(1, int(self.tam)))
 
-particulas = [Particula() for _ in range(50)]
+particulas = [Estrella() for _ in range(60)]
 
+# ------------------------------------------------------------
+# Funciones de dibujo del tablero (con cursor de IA incluido)
+# ------------------------------------------------------------
 def dibujar_panel(superficie, color_idx, x, y, w, h):
-    rect = pygame.Rect(x, y, w, h)
     if color_idx is None:
-        pygame.draw.rect(superficie, (40,40,50), rect, 1)
+        pygame.draw.rect(superficie, (50, 50, 65), (x, y, w, h), 1, border_radius=6)
         return
-    color_base = COLORES_RGB[color_idx]
-    pygame.draw.rect(superficie, color_base, rect, border_radius=4)
-    claro = [min(c + 100, 255) for c in color_base]
-    oscuro = [max(c - 100, 0) for c in color_base]
-    pygame.draw.line(superficie, claro, (x, y), (x+w-1, y), 3)
-    pygame.draw.line(superficie, claro, (x, y), (x, y+h-1), 3)
-    pygame.draw.line(superficie, oscuro, (x, y+h-1), (x+w-1, y+h-1), 3)
-    pygame.draw.line(superficie, oscuro, (x+w-1, y), (x+w-1, y+h-1), 3)
-    brillo = pygame.Surface((w//3, h//3), pygame.SRCALPHA)
-    brillo.fill((255,255,255, ALPHA_BRILLO))
-    superficie.blit(brillo, (x+3, y+3))
 
-def sombra_rect(superficie, rect, color=(0,0,0,60), desplazamiento=2):
-    sombra = pygame.Surface(rect.size, pygame.SRCALPHA)
-    sombra.fill(color)
+    base = COLORES_RGB[color_idx]
+    claro = COLORES_CLAROS[color_idx]
+    oscuro = COLORES_OSCUROS[color_idx]
+
+    sombra = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(sombra, (0, 0, 0, 90), (0, 0, w, h), border_radius=10)
+    superficie.blit(sombra, (x + 2, y + 3))
+
+    capa = pygame.Surface((w, h), pygame.SRCALPHA)
+    for i in range(h):
+        t = i / max(1, h - 1)
+        color = lerp_color(claro, oscuro, t)
+        pygame.draw.line(capa, (*color, 255), (0, i), (w, i))
+    mascara = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(mascara, (255, 255, 255, 255), (0, 0, w, h), border_radius=10)
+    capa.blit(mascara, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+    superficie.blit(capa, (x, y))
+
+    pygame.draw.rect(superficie, oscuro, (x, y, w, h), 2, border_radius=10)
+
+    brillo = pygame.Surface((w, h), pygame.SRCALPHA)
+    puntos = [(w * 0.18, h * 0.22), (w * 0.42, h * 0.14), (w * 0.30, h * 0.42)]
+    pygame.draw.polygon(brillo, (255, 255, 255, 130), puntos)
+    pygame.draw.ellipse(brillo, (255, 255, 255, 60), (w * 0.55, h * 0.6, w * 0.32, h * 0.22))
+    superficie.blit(brillo, (x, y))
+    pygame.draw.circle(superficie, base, (x + w // 2, y + h // 2), max(2, w // 10))
+
+def sombra_rect(superficie, rect, color=(0, 0, 0, 90), desplazamiento=4, radius=12):
+    sombra = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+    pygame.draw.rect(sombra, color, sombra.get_rect(), border_radius=radius)
     superficie.blit(sombra, rect.move(desplazamiento, desplazamiento))
 
-def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_restante=1.0):
-    tablero_rect = pygame.Rect(offset_x-6, offset_y-6, ANCHO_TABLERO*TAM_CELDA+12, ALTO_VISIBLE*TAM_CELDA+12)
-    sombra_rect(pantalla, tablero_rect, (0,0,0,100), 4)
-    pygame.draw.rect(pantalla, (25,25,35), tablero_rect, border_radius=10)
-    pygame.draw.rect(pantalla, (80,70,40), tablero_rect, 2, border_radius=10)
+def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_restante=1.0, color_tema=COLOR_ACENTO_2):
+    ancho_px = ANCHO_TABLERO * TAM_CELDA
+    alto_px = ALTO_VISIBLE * TAM_CELDA
+    tablero_rect = pygame.Rect(offset_x - 8, offset_y - 8, ancho_px + 16, alto_px + 16)
 
-    for c in range(ANCHO_TABLERO+1):
-        x = offset_x + c*TAM_CELDA
-        pygame.draw.line(pantalla, COLOR_LINEAS_GUIA, (x, offset_y), (x, offset_y+ALTO_VISIBLE*TAM_CELDA), 1)
-    for r in range(ALTO_VISIBLE+1):
-        y = offset_y + r*TAM_CELDA
-        pygame.draw.line(pantalla, COLOR_LINEAS_GUIA, (offset_x, y), (offset_x+ANCHO_TABLERO*TAM_CELDA, y), 1)
+    sombra_rect(pantalla, tablero_rect, (0, 0, 0, 120), 6, radius=16)
+    glow_rect(pantalla, tablero_rect, color_tema, capas=3, radius=16, alpha_base=22)
+
+    fondo_tablero = pygame.Rect(offset_x - 6, offset_y - 6, ancho_px + 12, alto_px + 12)
+    dibujar_gradiente_vertical(pantalla, fondo_tablero, (26, 22, 40), (16, 14, 26), radius=14)
+    pygame.draw.rect(pantalla, color_tema, fondo_tablero, 2, border_radius=14)
+
+    grid = pygame.Surface((ancho_px, alto_px), pygame.SRCALPHA)
+    for c in range(ANCHO_TABLERO + 1):
+        x = c * TAM_CELDA
+        pygame.draw.line(grid, (255, 255, 255, 12), (x, 0), (x, alto_px), 1)
+    for r in range(ALTO_VISIBLE + 1):
+        y = r * TAM_CELDA
+        pygame.draw.line(grid, (255, 255, 255, 12), (0, y), (ancho_px, y), 1)
+    pantalla.blit(grid, (offset_x, offset_y))
 
     inicio_fila = FILAS_TOTALES - ALTO_VISIBLE
     for r in range(inicio_fila, FILAS_TOTALES):
@@ -132,120 +202,179 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
             x = offset_x + c * TAM_CELDA + 3
             base_y = offset_y + fila_vis * TAM_CELDA + 3
             y = base_y + p.offset_y
-            dibujar_panel(pantalla, color, x, y, TAM_CELDA-6, TAM_CELDA-6)
+            dibujar_panel(pantalla, color, x, y, TAM_CELDA - 6, TAM_CELDA - 6)
 
-    # Cursor del jugador (siempre visible)
+    # Cursor del jugador
     if es_jugador:
         cx, cy = board.cursor_x, board.cursor_y
         if inicio_fila <= cy < FILAS_TOTALES:
             fila_vis = cy - inicio_fila
             cx_pix = offset_x + cx * TAM_CELDA
             cy_pix = offset_y + fila_vis * TAM_CELDA
-            cursor_rect = pygame.Rect(cx_pix, cy_pix, TAM_CELDA*2, TAM_CELDA)
+            cursor_rect = pygame.Rect(cx_pix, cy_pix, TAM_CELDA * 2, TAM_CELDA)
             valida = board._posicion_es_valida(cy, cx)
-            color_aura = (255,255,120,50) if valida else (255,120,120,50)
-            aura = pygame.Surface((cursor_rect.width+14, cursor_rect.height+14), pygame.SRCALPHA)
-            pygame.draw.rect(aura, color_aura, aura.get_rect(), border_radius=8)
-            pantalla.blit(aura, cursor_rect.move(-7,-7))
-            color_borde = (255,255,0,230) if valida else (255,100,100,210)
-            pygame.draw.rect(pantalla, color_borde, cursor_rect, 4, border_radius=6)
-            centro_x = cx_pix + TAM_CELDA
-            pygame.draw.polygon(pantalla, color_borde,
-                [(centro_x-6, cy_pix-6), (centro_x+6, cy_pix-6), (centro_x, cy_pix-12)])
-            pygame.draw.polygon(pantalla, color_borde,
-                [(centro_x-6, cy_pix+TAM_CELDA+6), (centro_x+6, cy_pix+TAM_CELDA+6), (centro_x, cy_pix+TAM_CELDA+12)])
+            color_ok = (255, 220, 70)
+            color_bad = (255, 90, 100)
+            color_borde = color_ok if valida else color_bad
+            pulso = fase(2.2)
 
-    # Cursor de la IA (solo si hay una acción pendiente)
+            aura = pygame.Surface((cursor_rect.width + 20, cursor_rect.height + 20), pygame.SRCALPHA)
+            alpha_aura = int(35 + 25 * pulso)
+            pygame.draw.rect(aura, (*color_borde, alpha_aura), aura.get_rect(), border_radius=10)
+            pantalla.blit(aura, cursor_rect.move(-10, -10))
+
+            grosor = 3 + int(pulso * 2)
+            pygame.draw.rect(pantalla, color_borde, cursor_rect, grosor, border_radius=8)
+            centro_x = cx_pix + TAM_CELDA
+            desp = int(pulso * 3)
+            pygame.draw.polygon(pantalla, color_borde,
+                [(centro_x - 7, cy_pix - 7 - desp), (centro_x + 7, cy_pix - 7 - desp), (centro_x, cy_pix - 15 - desp)])
+            pygame.draw.polygon(pantalla, color_borde,
+                [(centro_x - 7, cy_pix + TAM_CELDA + 7 + desp), (centro_x + 7, cy_pix + TAM_CELDA + 7 + desp),
+                 (centro_x, cy_pix + TAM_CELDA + 15 + desp)])
+
+    # Cursor de la IA
     if not es_jugador and ia_accion_pendiente is not None and board is ia:
-        # Mostrar un cursor suave en la columna que va a intercambiar
         x_col = ia_accion_pendiente
-        # Buscamos la fila más baja con paneles en esa columna
         for fila in range(FILAS_TOTALES-1, -1, -1):
             if board.matriz[fila][x_col] is not None or board.matriz[fila][x_col+1] is not None:
                 cy_ia = fila
                 break
         else:
-            cy_ia = FILAS_TOTALES - 1
+            cy_ia = board.cursor_y
         if inicio_fila <= cy_ia < FILAS_TOTALES:
             fila_vis = cy_ia - inicio_fila
             cx_pix = offset_x + x_col * TAM_CELDA
             cy_pix = offset_y + fila_vis * TAM_CELDA
             cursor_rect = pygame.Rect(cx_pix, cy_pix, TAM_CELDA*2, TAM_CELDA)
-            # Cursor blanco semitransparente
-            cursor_surf = pygame.Surface(cursor_rect.size, pygame.SRCALPHA)
-            pygame.draw.rect(cursor_surf, (255,255,255,100), cursor_surf.get_rect(), 3, border_radius=4)
-            pantalla.blit(cursor_surf, cursor_rect)
+            pulso = fase(3.0)
+            color_cursor = COLOR_ACENTO_2
+            alpha_aura = int(20 + 15 * pulso)
+            aura = pygame.Surface((cursor_rect.width + 16, cursor_rect.height + 16), pygame.SRCALPHA)
+            pygame.draw.rect(aura, (*color_cursor, alpha_aura), aura.get_rect(), border_radius=10)
+            pantalla.blit(aura, cursor_rect.move(-8, -8))
+            grosor = 2 + int(pulso * 2)
+            pygame.draw.rect(pantalla, color_cursor, cursor_rect, grosor, border_radius=6)
 
     if not partida_terminada:
-        barra_rect = pygame.Rect(offset_x, offset_y - 18, ANCHO_TABLERO*TAM_CELDA, 10)
-        pygame.draw.rect(pantalla, (30,30,30), barra_rect, border_radius=5)
+        barra_rect = pygame.Rect(offset_x, offset_y - 20, ancho_px, 10)
+        pygame.draw.rect(pantalla, (20, 20, 30), barra_rect, border_radius=6)
         progreso = 1.0 - tiempo_subida_restante
-        relleno = pygame.Rect(offset_x, offset_y - 18, int(ANCHO_TABLERO*TAM_CELDA * max(0, min(1, progreso))), 10)
-        color_barra = (0,200,0) if progreso < 0.7 else (255,200,0) if progreso < 0.9 else (255,50,50)
-        pygame.draw.rect(pantalla, color_barra, relleno, border_radius=5)
+        ancho_relleno = int(ancho_px * max(0, min(1, progreso)))
+        if ancho_relleno > 0:
+            relleno = pygame.Rect(offset_x, offset_y - 20, ancho_relleno, 10)
+            color_barra = lerp_color((60, 220, 100), (255, 60, 60), progreso)
+            pygame.draw.rect(pantalla, color_barra, relleno, border_radius=6)
+            if progreso > 0.85:
+                glow_rect(pantalla, relleno, (255, 60, 60), capas=2, radius=6, alpha_base=50)
+        pygame.draw.rect(pantalla, (70, 70, 90), barra_rect, 1, border_radius=6)
+
+def badge(superficie, centro, texto, color_fondo, color_texto=(20, 20, 25)):
+    txt = fuente_chica.render(texto, True, color_texto)
+    pad_x, pad_y = 14, 6
+    rect = pygame.Rect(0, 0, txt.get_width() + pad_x * 2, txt.get_height() + pad_y * 2)
+    rect.center = centro
+    pygame.draw.rect(superficie, color_fondo, rect, border_radius=rect.height // 2)
+    superficie.blit(txt, (rect.x + pad_x, rect.y + pad_y))
 
 def dibujar_hud():
-    panel = pygame.Rect(0, ALTO_VENTANA-70, ANCHO_VENTANA, 70)
-    pygame.draw.rect(pantalla, (15,15,25,220), panel)
-    pygame.draw.line(pantalla, (80,80,100), (0, ALTO_VENTANA-70), (ANCHO_VENTANA, ALTO_VENTANA-70), 2)
-    if modo_juego == "solitario":
-        txt_jug = fuente_hud.render(f"Puntuación: {puntuacion_jugador}", True, (255,255,255))
-        pantalla.blit(txt_jug, (ANCHO_VENTANA//2 - txt_jug.get_width()//2, ALTO_VENTANA-55))
-    else:
-        txt_jug = fuente_hud.render(f"Jugador: {puntuacion_jugador}", True, (255,255,255))
-        txt_ia = fuente_hud.render(f"IA: {puntuacion_ia}", True, (255,255,255))
-        pantalla.blit(txt_jug, (40, ALTO_VENTANA-55))
-        pantalla.blit(txt_ia, (ANCHO_VENTANA//2 + 40, ALTO_VENTANA-55))
-    txt_modo = fuente.render(f"Modo: {modo_juego.capitalize()}", True, (200,200,200))
-    txt_pausa = fuente.render("ESC: Pausa", True, (150,150,150))
-    pantalla.blit(txt_modo, (ANCHO_VENTANA//2 - 80, ALTO_VENTANA-65))
-    pantalla.blit(txt_pausa, (ANCHO_VENTANA - 170, ALTO_VENTANA-55))
+    panel_rect = pygame.Rect(0, ALTO_VENTANA - 76, ANCHO_VENTANA, 76)
+    dibujar_gradiente_vertical(pantalla, panel_rect, (18, 18, 30), (10, 10, 18))
+    pygame.draw.line(pantalla, COLOR_BORDE_UI, (0, ALTO_VENTANA - 76), (ANCHO_VENTANA, ALTO_VENTANA - 76), 2)
 
-def mostrar_texto_temporal(texto, x, y, duracion=60, color=(255, 255, 0), tamaño=32):
-    fuente_temp = pygame.font.SysFont("Arial", tamaño, bold=True)
+    if modo_juego == "solitario":
+        txt_jug = fuente_hud.render(f"Puntuación  {puntuacion_jugador}", True, COLOR_TEXTO)
+        pantalla.blit(txt_jug, (ANCHO_VENTANA // 2 - txt_jug.get_width() // 2, ALTO_VENTANA - 68))
+    else:
+        pygame.draw.circle(pantalla, COLOR_ACENTO_2, (36, ALTO_VENTANA - 40), 8)
+        txt_jug = fuente_hud.render(f"Jugador  {puntuacion_jugador}", True, COLOR_TEXTO)
+        pantalla.blit(txt_jug, (52, ALTO_VENTANA - 50))
+
+        txt_ia = fuente_hud.render(f"IA  {puntuacion_ia}", True, COLOR_TEXTO)
+        x_ia = ANCHO_VENTANA - 40 - txt_ia.get_width()
+        pygame.draw.circle(pantalla, COLOR_ACENTO_3, (x_ia - 16, ALTO_VENTANA - 40), 8)
+        pantalla.blit(txt_ia, (x_ia, ALTO_VENTANA - 50))
+
+    badge(pantalla, (ANCHO_VENTANA // 2, ALTO_VENTANA - 30), modo_juego.capitalize(), COLOR_ACENTO)
+    txt_pausa = fuente_chica.render("ESC · Pausa", True, COLOR_TEXTO_SUAVE)
+    pantalla.blit(txt_pausa, (ANCHO_VENTANA - txt_pausa.get_width() - 24, ALTO_VENTANA - 30))
+
+def mostrar_texto_temporal(texto, x, y, duracion=60, color=(255, 220, 80), tamaño=32):
+    fuente_temp = pygame.font.SysFont(FUENTE_FAMILIA, tamaño, bold=True)
+    animaciones.append(('texto', (texto, x, y, fuente_temp, color), duracion))
+
+def mostrar_mensaje_centrado(texto, duracion=90, color=(255,255,0), tamaño=40):
+    """Muestra un mensaje grande centrado que dura varios frames."""
+    fuente_temp = pygame.font.SysFont(FUENTE_FAMILIA, tamaño, bold=True)
+    x = ANCHO_VENTANA // 2 - fuente_temp.size(texto)[0] // 2
+    y = ALTO_VENTANA // 2 - 30
     animaciones.append(('texto', (texto, x, y, fuente_temp, color), duracion))
 
 def dibujar_animaciones():
     global animaciones
-    for anim in animaciones[:]:
-        tipo, datos, tiempo = anim
+    restantes = []
+    for tipo, datos, tiempo in animaciones:
         if tipo == 'texto':
             texto, x, y, fuente_temp, color = datos
-            alpha = int(255 * (tiempo / 60)) if tiempo < 60 else 255
+            progreso = 1 - (tiempo / 60)
+            alpha = int(255 * min(1.0, tiempo / 25))
+            offset_y = -progreso * 18
+            escala = 1.0 + 0.15 * math.sin(progreso * math.pi)
             surf = fuente_temp.render(texto, True, color)
+            if escala != 1.0:
+                w, h = surf.get_size()
+                surf = pygame.transform.smoothscale(surf, (max(1, int(w * escala)), max(1, int(h * escala))))
             surf.set_alpha(alpha)
-            sombra = fuente_temp.render(texto, True, (0,0,0))
-            sombra.set_alpha(alpha//2)
-            pantalla.blit(sombra, (x+2, y+2))
-            pantalla.blit(surf, (x, y))
+            sombra = pygame.font.SysFont(FUENTE_FAMILIA, fuente_temp.get_height(), bold=True).render(texto, True, (0, 0, 0))
+            sombra.set_alpha(alpha // 2)
+            pantalla.blit(sombra, (x + 3, y + offset_y + 3))
+            pantalla.blit(surf, (x, y + offset_y))
         elif tipo == 'destello':
             x, y, radio = datos
             intensidad = tiempo / 15
-            color = (255, 255, 150 * intensidad)
-            pygame.draw.circle(pantalla, color, (int(x), int(y)), int(radio * intensidad))
+            capa = pygame.Surface((int(radio * 4), int(radio * 4)), pygame.SRCALPHA)
+            pygame.draw.circle(capa, (255, 235, 150, int(180 * intensidad)),
+                                (capa.get_width() // 2, capa.get_height() // 2), int(radio * 2 * intensidad))
+            pantalla.blit(capa, (x - capa.get_width() // 2, y - capa.get_height() // 2))
         tiempo -= 1
-        if tiempo <= 0:
-            animaciones.remove(anim)
-        else:
-            animaciones[animaciones.index(anim)] = (tipo, datos, tiempo)
-
-def mostrar_mensaje_temporal(mensaje, duracion=1.5):
-    pantalla.blit(fondo_estatico, (0,0))
-    overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
-    overlay.fill((0,0,0,180))
-    pantalla.blit(overlay, (0,0))
-    txt = fuente_grande.render(mensaje, True, (255,255,100))
-    pantalla.blit(txt, (ANCHO_VENTANA//2 - txt.get_width()//2, ALTO_VENTANA//2 - txt.get_height()//2))
-    pygame.display.flip()
-    tiempo_inicio = pygame.time.get_ticks()
-    while pygame.time.get_ticks() - tiempo_inicio < duracion * 1000:
-        for evento in pygame.event.get():
-            if evento.type == pygame.QUIT:
-                pygame.quit(); sys.exit()
-        reloj.tick(30)
+        if tiempo > 0:
+            restantes.append((tipo, datos, tiempo))
+    animaciones[:] = restantes
 
 # ------------------------------------------------------------
-# Menús (sin cambios excepto en los cierres donde se actualiza el modelo)
+# Componentes de menú
+# ------------------------------------------------------------
+def titulo_con_glow(texto, y, tam_fuente=58, color=(255, 255, 255)):
+    f = pygame.font.SysFont(FUENTE_FAMILIA, tam_fuente, bold=True)
+    txt = f.render(texto, True, color)
+    x = ANCHO_VENTANA // 2 - txt.get_width() // 2
+    glow = pygame.Surface((txt.get_width() + 40, txt.get_height() + 40), pygame.SRCALPHA)
+    glow_txt = f.render(texto, True, COLOR_ACENTO)
+    alpha = int(60 + 40 * fase(1.5))
+    glow_txt.set_alpha(alpha)
+    glow.blit(glow_txt, (20, 20))
+    glow = pygame.transform.smoothscale(glow, (int(glow.get_width() * 1.04), int(glow.get_height() * 1.04)))
+    pantalla.blit(glow, (x - 20 - (glow.get_width() - txt.get_width() - 40) // 2, y - 20))
+    sombra = f.render(texto, True, (0, 0, 0))
+    pantalla.blit(sombra, (x + 3, y + 3))
+    pantalla.blit(txt, (x, y))
+
+def opcion_menu(texto, y, seleccionada, ancho=420):
+    rect = pygame.Rect(0, 0, ancho, 58)
+    rect.center = (ANCHO_VENTANA // 2, y)
+    if seleccionada:
+        glow_rect(pantalla, rect, COLOR_ACENTO, capas=3, radius=16, alpha_base=45)
+        panel_ui(pantalla, rect, color=COLOR_PANEL_UI_CLARO, borde=COLOR_ACENTO, radius=16, grosor=3)
+        pygame.draw.circle(pantalla, COLOR_ACENTO, (rect.x + 26, rect.centery), 5)
+        color_txt = (255, 255, 255)
+    else:
+        panel_ui(pantalla, rect, color=COLOR_PANEL_UI, borde=COLOR_BORDE_UI, radius=16, grosor=1, alpha=170)
+        color_txt = COLOR_TEXTO_SUAVE
+    txt = fuente_grande.render(texto, True, color_txt)
+    pantalla.blit(txt, (rect.centerx - txt.get_width() // 2 + (14 if seleccionada else 0), rect.centery - txt.get_height() // 2))
+
+# ------------------------------------------------------------
+# Menú de pausa (con actualización del modelo al salir)
 # ------------------------------------------------------------
 def menu_pausa():
     global pausa
@@ -253,20 +382,13 @@ def menu_pausa():
     seleccion = 0
     while pausa:
         overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
-        overlay.fill((0,0,0,180))
-        pantalla.blit(overlay, (0,0))
-        txt_titulo = fuente_titulo.render("PAUSA", True, (255,255,255))
-        pantalla.blit(txt_titulo, (ANCHO_VENTANA//2 - txt_titulo.get_width()//2, 100))
+        overlay.fill((8, 8, 14, 200))
+        pantalla.blit(overlay, (0, 0))
+        titulo_con_glow("PAUSA", 90, 52)
         for i, op in enumerate(opciones):
-            color = (255,215,0) if i == seleccion else (200,200,200)
-            txt = fuente_grande.render(op, True, color)
-            rect = txt.get_rect(center=(ANCHO_VENTANA//2, 220 + i*80))
-            if i == seleccion:
-                pygame.draw.rect(pantalla, (40,40,60), rect.inflate(50, 20), border_radius=14)
-                pygame.draw.rect(pantalla, (255,215,0), rect.inflate(50, 20), 3, border_radius=14)
-            pantalla.blit(txt, rect)
-        instru = fuente.render("↑↓: Navegar  ENTER: Seleccionar  ESC: Volver", True, (150,150,150))
-        pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
+            opcion_menu(op, 220 + i * 74, i == seleccion, ancho=320)
+        instru = fuente_chica.render("↑ ↓ Navegar   ENTER Elegir   ESC Volver", True, COLOR_TEXTO_SUAVE)
+        pantalla.blit(instru, (ANCHO_VENTANA // 2 - instru.get_width() // 2, ALTO_VENTANA - 44))
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
                 guardar_historial()
@@ -274,17 +396,31 @@ def menu_pausa():
                 pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_ESCAPE: pausa = False
-                elif evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%4
-                elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%4
+                elif evento.key == pygame.K_DOWN: seleccion = (seleccion + 1) % 4
+                elif evento.key == pygame.K_UP: seleccion = (seleccion - 1) % 4
                 elif evento.key == pygame.K_RETURN:
                     if seleccion == 0: pausa = False
-                    elif seleccion == 1: guardar_historial(); actualizar_modelo(); reiniciar_partida(); pausa = False
-                    elif seleccion == 2: guardar_historial(); actualizar_modelo(); pausa = False; return "menu"
-                    elif seleccion == 3: guardar_historial(); actualizar_modelo(); pygame.quit(); sys.exit()
+                    elif seleccion == 1:
+                        guardar_historial()
+                        actualizar_modelo()
+                        reiniciar_partida()
+                        pausa = False
+                    elif seleccion == 2:
+                        guardar_historial()
+                        actualizar_modelo()
+                        pausa = False
+                        return "menu"
+                    elif seleccion == 3:
+                        guardar_historial()
+                        actualizar_modelo()
+                        pygame.quit(); sys.exit()
         pygame.display.flip()
         reloj.tick(30)
     return "juego"
 
+# ------------------------------------------------------------
+# Entrada de nombre y ranking (sin cambios)
+# ------------------------------------------------------------
 def ingresar_nombre(puntaje):
     nombre = ""
     while len(nombre) < 3:
@@ -299,22 +435,24 @@ def ingresar_nombre(puntaje):
                         nombre += chr(evento.key).upper()
                 elif evento.key == pygame.K_BACKSPACE and len(nombre) > 0:
                     nombre = nombre[:-1]
-        pantalla.blit(fondo_estatico, (0,0))
+        pantalla.blit(fondo_estatico, (0, 0))
         overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
-        overlay.fill((0,0,0,180))
-        pantalla.blit(overlay, (0,0))
-        txt_titulo = fuente_titulo.render("¡NUEVO RÉCORD!", True, (255,255,0))
-        pantalla.blit(txt_titulo, (ANCHO_VENTANA//2 - txt_titulo.get_width()//2, 120))
-        txt_sub = fuente_grande.render(f"Puntuación: {puntaje}", True, (255,255,255))
-        pantalla.blit(txt_sub, (ANCHO_VENTANA//2 - txt_sub.get_width()//2, 200))
-        txt_inst = fuente.render("Ingresa tus iniciales (3 letras):", True, (200,200,200))
-        pantalla.blit(txt_inst, (ANCHO_VENTANA//2 - txt_inst.get_width()//2, 280))
+        overlay.fill((8, 8, 14, 190))
+        pantalla.blit(overlay, (0, 0))
+        titulo_con_glow("¡NUEVO RÉCORD!", 110, 46, color=COLOR_ACENTO)
+        txt_sub = fuente_grande.render(f"Puntuación: {puntaje}", True, COLOR_TEXTO)
+        pantalla.blit(txt_sub, (ANCHO_VENTANA // 2 - txt_sub.get_width() // 2, 195))
+        txt_inst = fuente.render("Ingresa tus iniciales (3 letras)", True, COLOR_TEXTO_SUAVE)
+        pantalla.blit(txt_inst, (ANCHO_VENTANA // 2 - txt_inst.get_width() // 2, 260))
         for i in range(3):
             letra = nombre[i] if i < len(nombre) else "_"
-            txt_letra = fuente_nombre.render(letra, True, (255,255,255))
-            x = ANCHO_VENTANA//2 - 60 + i*40
-            pantalla.blit(txt_letra, (x, 340))
-            pygame.draw.line(pantalla, (255,215,0) if i < len(nombre) else (100,100,100), (x, 390), (x+30, 390), 3)
+            casilla = pygame.Rect(0, 0, 64, 78)
+            casilla.center = (ANCHO_VENTANA // 2 - 80 + i * 80, 350)
+            activo = i < len(nombre)
+            panel_ui(pantalla, casilla, color=COLOR_PANEL_UI_CLARO if activo else COLOR_PANEL_UI,
+                     borde=COLOR_ACENTO if activo else COLOR_BORDE_UI, radius=12, grosor=2)
+            txt_letra = fuente_nombre.render(letra, True, COLOR_TEXTO if activo else COLOR_TEXTO_SUAVE)
+            pantalla.blit(txt_letra, (casilla.centerx - txt_letra.get_width() // 2, casilla.centery - txt_letra.get_height() // 2))
         pygame.display.flip()
         reloj.tick(30)
     return nombre
@@ -331,61 +469,65 @@ def mostrar_ranking():
             if evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_ESCAPE or evento.key == pygame.K_RETURN:
                     esperando = False
-        pantalla.blit(fondo_estatico, (0,0))
+        pantalla.blit(fondo_estatico, (0, 0))
         overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
-        overlay.fill((0,0,0,200))
-        pantalla.blit(overlay, (0,0))
-        txt_titulo = fuente_titulo.render("MEJORES PUNTAJES", True, (255,255,0))
-        pantalla.blit(txt_titulo, (ANCHO_VENTANA//2 - txt_titulo.get_width()//2, 50))
+        overlay.fill((8, 8, 14, 210))
+        pantalla.blit(overlay, (0, 0))
+        titulo_con_glow("MEJORES PUNTAJES", 40, 46, color=COLOR_ACENTO)
         if not ranking:
-            txt_vacio = fuente_grande.render("Aún no hay récords", True, (200,200,200))
-            pantalla.blit(txt_vacio, (ANCHO_VENTANA//2 - txt_vacio.get_width()//2, 200))
+            txt_vacio = fuente_grande.render("Aún no hay récords", True, COLOR_TEXTO_SUAVE)
+            pantalla.blit(txt_vacio, (ANCHO_VENTANA // 2 - txt_vacio.get_width() // 2, 220))
         else:
             for i, entrada in enumerate(ranking):
-                color = (255,255,255) if i < 3 else (200,200,200)
-                txt = fuente_grande.render(f"{i+1:2d}. {entrada['nombre']}  -  {entrada['puntaje']}", True, color)
-                pantalla.blit(txt, (ANCHO_VENTANA//2 - 180, 150 + i*50))
-        txt_volver = fuente.render("Presiona ENTER o ESC para volver", True, (150,150,150))
-        pantalla.blit(txt_volver, (ANCHO_VENTANA//2 - txt_volver.get_width()//2, ALTO_VENTANA-50))
+                fila_rect = pygame.Rect(0, 0, 420, 46)
+                fila_rect.center = (ANCHO_VENTANA // 2, 145 + i * 52)
+                es_top3 = i < 3
+                panel_ui(pantalla, fila_rect,
+                         color=COLOR_PANEL_UI_CLARO if es_top3 else COLOR_PANEL_UI,
+                         borde=COLOR_ACENTO if es_top3 else COLOR_BORDE_UI,
+                         radius=12, grosor=2 if es_top3 else 1, alpha=200)
+                color_txt = COLOR_ACENTO if es_top3 else COLOR_TEXTO
+                txt = fuente_grande.render(f"{i+1:>2}.  {entrada['nombre']}", True, color_txt)
+                puntos = fuente_grande.render(str(entrada['puntaje']), True, color_txt)
+                pantalla.blit(txt, (fila_rect.x + 20, fila_rect.centery - txt.get_height() // 2))
+                pantalla.blit(puntos, (fila_rect.right - 20 - puntos.get_width(), fila_rect.centery - puntos.get_height() // 2))
+        txt_volver = fuente_chica.render("ENTER / ESC para volver", True, COLOR_TEXTO_SUAVE)
+        pantalla.blit(txt_volver, (ANCHO_VENTANA // 2 - txt_volver.get_width() // 2, ALTO_VENTANA - 40))
         pygame.display.flip()
         reloj.tick(30)
 
+# ------------------------------------------------------------
+# Selección de dificultad
+# ------------------------------------------------------------
 def menu_dificultad():
     global dificultad_ia
     opciones = ["Fácil", "Normal", "Difícil"]
     seleccion = 1
     while True:
         overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
-        overlay.fill((0,0,0,180))
-        pantalla.blit(overlay, (0,0))
-        txt_titulo = fuente_titulo.render("DIFICULTAD IA", True, (255,255,255))
-        pantalla.blit(txt_titulo, (ANCHO_VENTANA//2 - txt_titulo.get_width()//2, 100))
+        overlay.fill((8, 8, 14, 190))
+        pantalla.blit(overlay, (0, 0))
+        titulo_con_glow("DIFICULTAD IA", 100, 46)
         for i, op in enumerate(opciones):
-            color = (255,215,0) if i == seleccion else (200,200,200)
-            txt = fuente_grande.render(op, True, color)
-            rect = txt.get_rect(center=(ANCHO_VENTANA//2, 220 + i*80))
-            if i == seleccion:
-                pygame.draw.rect(pantalla, (40,40,60), rect.inflate(50, 20), border_radius=14)
-                pygame.draw.rect(pantalla, (255,215,0), rect.inflate(50, 20), 3, border_radius=14)
-            pantalla.blit(txt, rect)
-        instru = fuente.render("↑↓: Elegir   ENTER: Confirmar", True, (150,150,150))
-        pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
+            opcion_menu(op, 220 + i * 74, i == seleccion, ancho=320)
+        instru = fuente_chica.render("↑ ↓ Elegir   ENTER Confirmar", True, COLOR_TEXTO_SUAVE)
+        pantalla.blit(instru, (ANCHO_VENTANA // 2 - instru.get_width() // 2, ALTO_VENTANA - 44))
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
                 guardar_historial()
                 actualizar_modelo()
                 pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
-                if evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%3
-                elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%3
+                if evento.key == pygame.K_DOWN: seleccion = (seleccion + 1) % 3
+                elif evento.key == pygame.K_UP: seleccion = (seleccion - 1) % 3
                 elif evento.key == pygame.K_RETURN:
-                    dificultad_ia = ["facil","normal","dificil"][seleccion]
+                    dificultad_ia = ["facil", "normal", "dificil"][seleccion]
                     return
         pygame.display.flip()
         reloj.tick(30)
 
 # ------------------------------------------------------------
-# Lógica de juego
+# Lógica de juego (incluye guardado automático del modelo al finalizar)
 # ------------------------------------------------------------
 def procesar_eventos():
     global jugador, ia, turno_ia_timer, partida_terminada, ganador, historial_jugador, pausa
@@ -405,13 +547,14 @@ def procesar_eventos():
             elif evento.key == pygame.K_UP: jugador.mover_cursor(0, -1)
             elif evento.key == pygame.K_DOWN: jugador.mover_cursor(0, 1)
             elif evento.key == pygame.K_SPACE:
-                estado_vector = jugador.estado_a_vector()
+                estado_previo = jugador.estado_a_vector()
+                columna_accion = jugador.cursor_x
                 if jugador.intercambiar():
-                    destello_x = MARGEN_LATERAL + jugador.cursor_x * TAM_CELDA + TAM_CELDA//2
-                    destello_y = MARGEN_SUPERIOR + (jugador.cursor_y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA//2
+                    destello_x = MARGEN_LATERAL + jugador.cursor_x * TAM_CELDA + TAM_CELDA // 2
+                    destello_y = MARGEN_SUPERIOR + (jugador.cursor_y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA // 2
                     animaciones.append(('destello', (destello_x, destello_y, 12), 15))
-                    historial_jugador.append((estado_vector, jugador.cursor_x))
                     turno_ia_timer = 0
+                    historial_jugador.append((estado_previo, columna_accion))
 
 def actualizar_mundo(dt):
     global jugador, ia, puntuacion_jugador, puntuacion_ia, combo_jugador, combo_ia
@@ -425,7 +568,7 @@ def actualizar_mundo(dt):
             combo_jugador += 1
             puntuacion_jugador += 10 * combo_jugador
             if combo_jugador > 1:
-                mostrar_texto_temporal(f"COMBO x{combo_jugador}!", ANCHO_VENTANA//2-120, ALTO_VENTANA//2-50)
+                mostrar_texto_temporal(f"COMBO x{combo_jugador}!", ANCHO_VENTANA // 2 - 120, ALTO_VENTANA // 2 - 50)
             ultima_cadena_jugador = combo_jugador
         if jugador.estado == 'normal' and estado_anterior_j == 'pausa' and jugador.esta_estable():
             if ultima_cadena_jugador > 0:
@@ -452,7 +595,7 @@ def actualizar_mundo(dt):
             combo_jugador += 1
             puntuacion_jugador += 10 * combo_jugador
             if combo_jugador > 1:
-                mostrar_texto_temporal(f"COMBO x{combo_jugador}!", ANCHO_VENTANA//2-120, ALTO_VENTANA//2-50)
+                mostrar_texto_temporal(f"COMBO x{combo_jugador}!", ANCHO_VENTANA // 2 - 120, ALTO_VENTANA // 2 - 50)
         if jugador.esta_perdido():
             partida_terminada = True
             ganador = "Jugador"
@@ -464,26 +607,22 @@ def actualizar_ia():
     turno_ia_timer += 1
     if turno_ia_timer >= IA_DELAY:
         turno_ia_timer = 0
+        ia_accion_pendiente = None
         copia_logica = ia.copiar()
-
         if modo_juego == "clasico":
             accion = elegir_movimiento_clasico(copia_logica, dificultad_ia)
             if accion is not None:
-                exito = ia.intercambiar(accion)
-                if exito:
-                    # Destello rojo para la IA
-                    destello_x = (ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO*TAM_CELDA) + accion * TAM_CELDA + TAM_CELDA//2
-                    destello_y = MARGEN_SUPERIOR + (ia.cursor_y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA//2
-                    animaciones.append(('destello', (destello_x, destello_y, 12), 15))
-        else:   # adaptativo
+                x, y = accion
+                ia_accion_pendiente = x   # para el cursor
+                ia.intercambiar_en(x, y)
+        else:
+            if modelo_adaptativo is None:
+                modelo_adaptativo = cargar_modelo()
             resultado = elegir_movimiento_adaptativo(copia_logica, modelo_adaptativo)
             if resultado != (None, None):
                 x, y = resultado
-                exito = ia.intercambiar_en(x, y)   # <-- nuevo método
-                if exito:
-                    destello_x = (ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO*TAM_CELDA) + x * TAM_CELDA + TAM_CELDA//2
-                    destello_y = MARGEN_SUPERIOR + (y - (FILAS_TOTALES - ALTO_VISIBLE)) * TAM_CELDA + TAM_CELDA//2
-                    animaciones.append(('destello', (destello_x, destello_y, 12), 15))
+                ia_accion_pendiente = x
+                ia.intercambiar_en(x, y)
 
 def actualizar_subida():
     global ultimo_rise, tiempo_subida
@@ -502,19 +641,13 @@ def actualizar_subida():
             tiempo_subida = max(800, tiempo_subida - 30)
 
 def guardar_historial():
-    global historial_jugador
     if historial_jugador:
         with open(ARCHIVO_DATOS, 'a', newline='') as f:
             escritor = csv.writer(f)
             for estado, accion in historial_jugador:
                 escritor.writerow(list(estado) + [accion])
-        num = len(historial_jugador)
-        print(f"Guardados {num} ejemplos en {ARCHIVO_DATOS}.")
-        if jugador is not None:
-            mostrar_texto_temporal(f"¡{num} ejemplos guardados!", 10, 10, duracion=90, color=(0,255,0), tamaño=20)
+        print(f"Guardados {len(historial_jugador)} ejemplos.")
         historial_jugador.clear()
-    else:
-        print("No hay ejemplos para guardar.")
 
 def reiniciar_partida():
     global jugador, ia, partida_terminada, ganador, historial_jugador
@@ -528,7 +661,7 @@ def reiniciar_partida():
         ia = Board(fisica=True)
     else:
         ia = None
-    partida_terminada = False; ganador = None
+    partida_terminada = False; ganador = None; historial_jugador = []
     puntuacion_jugador = 0; puntuacion_ia = 0
     combo_jugador = 0; combo_ia = 0
     ultima_cadena_jugador = 0; ultima_cadena_ia = 0
@@ -542,41 +675,44 @@ def reiniciar_partida():
         modelo_adaptativo = None
 
 def dibujar_interfaz(proporcion=1.0):
-    pantalla.blit(fondo_estatico, (0,0))
+    pantalla.blit(fondo_estatico, (0, 0))
     for p in particulas:
         p.draw(pantalla)
     if modo_juego != "solitario":
-        centro_x = ANCHO_VENTANA//2
-        pygame.draw.line(pantalla, (60,60,80), (centro_x, MARGEN_SUPERIOR), (centro_x, ALTO_VENTANA-MARGEN_INFERIOR), 2)
-        for i in range(5):
-            pygame.draw.line(pantalla, (100,100,140, 50-i*10), (centro_x-1, MARGEN_SUPERIOR), (centro_x-1, ALTO_VENTANA-MARGEN_INFERIOR), 1)
-        tit_jug = fuente_grande.render("JUGADOR", True, (255,255,255))
-        tit_ia = fuente_grande.render("IA", True, (255,255,255))
-        pantalla.blit(tit_jug, (MARGEN_LATERAL + (ANCHO_TABLERO*TAM_CELDA)//2 - tit_jug.get_width()//2, MARGEN_SUPERIOR-50))
-        pantalla.blit(tit_ia, (ANCHO_VENTANA - MARGEN_LATERAL - (ANCHO_TABLERO*TAM_CELDA)//2 - tit_ia.get_width()//2, MARGEN_SUPERIOR-50))
+        centro_x = ANCHO_VENTANA // 2
+        linea = pygame.Surface((3, ALTO_VENTANA - MARGEN_SUPERIOR - MARGEN_INFERIOR), pygame.SRCALPHA)
+        dibujar_gradiente_vertical(linea, (0, 0, 3, linea.get_height()), (120, 110, 170), (60, 55, 90))
+        pantalla.blit(linea, (centro_x - 1, MARGEN_SUPERIOR))
+
+        tit_jug = fuente_grande.render("JUGADOR", True, COLOR_ACENTO_2)
+        tit_ia = fuente_grande.render("IA", True, COLOR_ACENTO_3)
+        pantalla.blit(tit_jug, (MARGEN_LATERAL + (ANCHO_TABLERO * TAM_CELDA) // 2 - tit_jug.get_width() // 2, MARGEN_SUPERIOR - 48))
+        pantalla.blit(tit_ia, (ANCHO_VENTANA - MARGEN_LATERAL - (ANCHO_TABLERO * TAM_CELDA) // 2 - tit_ia.get_width() // 2, MARGEN_SUPERIOR - 48))
         offset_jug_x = MARGEN_LATERAL
-        offset_ia_x = ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO*TAM_CELDA
+        offset_ia_x = ANCHO_VENTANA - MARGEN_LATERAL - ANCHO_TABLERO * TAM_CELDA
         offset_y = MARGEN_SUPERIOR
-        dibujar_tablero(jugador, offset_jug_x, offset_y, es_jugador=True, tiempo_subida_restante=proporcion)
-        dibujar_tablero(ia, offset_ia_x, offset_y, es_jugador=False, tiempo_subida_restante=proporcion)
+        dibujar_tablero(jugador, offset_jug_x, offset_y, es_jugador=True, tiempo_subida_restante=proporcion, color_tema=COLOR_ACENTO_2)
+        dibujar_tablero(ia, offset_ia_x, offset_y, es_jugador=False, tiempo_subida_restante=proporcion, color_tema=COLOR_ACENTO_3)
     else:
-        offset_x = ANCHO_VENTANA//2 - (ANCHO_TABLERO*TAM_CELDA)//2
+        offset_x = ANCHO_VENTANA // 2 - (ANCHO_TABLERO * TAM_CELDA) // 2
         offset_y = MARGEN_SUPERIOR
-        tit_jug = fuente_grande.render("SOLITARIO", True, (255,255,255))
-        pantalla.blit(tit_jug, (ANCHO_VENTANA//2 - tit_jug.get_width()//2, MARGEN_SUPERIOR-50))
-        dibujar_tablero(jugador, offset_x, offset_y, es_jugador=True, tiempo_subida_restante=proporcion)
+        tit_jug = fuente_grande.render("SOLITARIO", True, COLOR_ACENTO)
+        pantalla.blit(tit_jug, (ANCHO_VENTANA // 2 - tit_jug.get_width() // 2, MARGEN_SUPERIOR - 48))
+        dibujar_tablero(jugador, offset_x, offset_y, es_jugador=True, tiempo_subida_restante=proporcion, color_tema=COLOR_ACENTO)
     dibujar_hud()
     if partida_terminada:
         overlay = pygame.Surface((ANCHO_VENTANA, ALTO_VENTANA), pygame.SRCALPHA)
-        overlay.fill((0,0,0,180))
-        pantalla.blit(overlay, (0,0))
+        overlay.fill((8, 8, 14, 190))
+        pantalla.blit(overlay, (0, 0))
         if modo_juego == "solitario":
-            texto_fin = fuente_grande.render(f"¡FIN! Puntuación: {puntuacion_jugador}", True, (255,255,100))
+            titulo_con_glow("¡FIN DE PARTIDA!", ALTO_VENTANA // 2 - 90, 44, color=COLOR_ACENTO)
+            texto_fin = fuente_grande.render(f"Puntuación: {puntuacion_jugador}", True, COLOR_TEXTO)
         else:
-            texto_fin = fuente_grande.render(f"FIN DEL JUEGO. GANADOR: {ganador}", True, (255,255,100))
-        texto_continuar = fuente.render("Presiona ENTER o R para continuar", True, (200,200,200))
-        pantalla.blit(texto_fin, (ANCHO_VENTANA//2 - texto_fin.get_width()//2, ALTO_VENTANA//2 - 40))
-        pantalla.blit(texto_continuar, (ANCHO_VENTANA//2 - texto_continuar.get_width()//2, ALTO_VENTANA//2 + 20))
+            titulo_con_glow("FIN DEL JUEGO", ALTO_VENTANA // 2 - 90, 44, color=COLOR_ACENTO)
+            texto_fin = fuente_grande.render(f"Ganador: {ganador}", True, COLOR_TEXTO)
+        pantalla.blit(texto_fin, (ANCHO_VENTANA // 2 - texto_fin.get_width() // 2, ALTO_VENTANA // 2 - 10))
+        texto_continuar = fuente_chica.render("ENTER o R para continuar", True, COLOR_TEXTO_SUAVE)
+        pantalla.blit(texto_continuar, (ANCHO_VENTANA // 2 - texto_continuar.get_width() // 2, ALTO_VENTANA // 2 + 40))
     dibujar_animaciones()
 
 # ------------------------------------------------------------
@@ -592,33 +728,24 @@ def menu_seleccion_modo():
     while True:
         for p in particulas:
             p.update(dt)
-        pantalla.blit(fondo_estatico, (0,0))
+        pantalla.blit(fondo_estatico, (0, 0))
         for p in particulas:
             p.draw(pantalla)
-        titulo = fuente_titulo.render("TETRIS ATTACK", True, (255,255,255))
-        sombra = fuente_titulo.render("TETRIS ATTACK", True, (0,0,0))
-        pantalla.blit(sombra, (ANCHO_VENTANA//2 - titulo.get_width()//2 + 3, 73))
-        pantalla.blit(titulo, (ANCHO_VENTANA//2 - titulo.get_width()//2, 70))
-        subtitulo = fuente_grande.render("Panel de Pon IA", True, (200,200,200))
-        pantalla.blit(subtitulo, (ANCHO_VENTANA//2 - subtitulo.get_width()//2, 150))
+        titulo_con_glow("TETRIS ATTACK", 62, 58)
+        subtitulo = fuente.render("Panel de Pon · IA Híbrida", True, COLOR_TEXTO_SUAVE)
+        pantalla.blit(subtitulo, (ANCHO_VENTANA // 2 - subtitulo.get_width() // 2, 138))
         for i, op in enumerate(opciones):
-            color = (255,215,0) if i == seleccion else (200,200,200)
-            txt = fuente_grande.render(op, True, color)
-            rect = txt.get_rect(center=(ANCHO_VENTANA//2, 230 + i*65))
-            if i == seleccion:
-                pygame.draw.rect(pantalla, (40,40,60), rect.inflate(60, 20), border_radius=14)
-                pygame.draw.rect(pantalla, (255,215,0), rect.inflate(60, 20), 3, border_radius=14)
-            pantalla.blit(txt, rect)
-        instru = fuente.render("↑↓: Elegir   ENTER: Confirmar   ←→: Cambiar velocidad", True, (150,150,150))
-        pantalla.blit(instru, (ANCHO_VENTANA//2 - instru.get_width()//2, ALTO_VENTANA-50))
+            opcion_menu(op, 210 + i * 62, i == seleccion)
+        instru = fuente_chica.render("↑ ↓ Elegir   ENTER Confirmar   ← → Cambiar velocidad", True, COLOR_TEXTO_SUAVE)
+        pantalla.blit(instru, (ANCHO_VENTANA // 2 - instru.get_width() // 2, ALTO_VENTANA - 40))
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
                 guardar_historial()
                 actualizar_modelo()
                 pygame.quit(); sys.exit()
             if evento.type == pygame.KEYDOWN:
-                if evento.key == pygame.K_DOWN: seleccion = (seleccion+1)%len(opciones)
-                elif evento.key == pygame.K_UP: seleccion = (seleccion-1)%len(opciones)
+                if evento.key == pygame.K_DOWN: seleccion = (seleccion + 1) % len(opciones)
+                elif evento.key == pygame.K_UP: seleccion = (seleccion - 1) % len(opciones)
                 elif evento.key == pygame.K_RETURN:
                     if seleccion == 0:
                         menu_dificultad()
@@ -649,10 +776,10 @@ def menu_seleccion_modo():
                             velocidad_subida = "lento" if evento.key == pygame.K_RIGHT else "normal"
                         opciones[4] = f"Velocidad: {velocidad_subida.capitalize()}"
         pygame.display.flip()
-        dt = reloj_local.tick(60)/1000.0
+        dt = reloj_local.tick(60) / 1000.0
 
 # ------------------------------------------------------------
-# Bucle principal
+# Bucle principal (con actualización del modelo)
 # ------------------------------------------------------------
 def main():
     global pausa, partida_terminada, ganador, modo_juego, puntuacion_jugador, tiempo_subida, velocidad_subida
@@ -676,7 +803,7 @@ def main():
             actualizar_subida()
             dibujar_interfaz(proporcion)
             pygame.display.flip()
-            dt = reloj.tick(FPS)/1000.0
+            dt = reloj.tick(FPS) / 1000.0
 
             if partida_terminada:
                 reloj.tick(30)
@@ -690,14 +817,16 @@ def main():
                         if evento.type == pygame.KEYDOWN:
                             if evento.key == pygame.K_RETURN or evento.key == pygame.K_r:
                                 esperando = False
+                    dibujar_interfaz(proporcion)
+                    pygame.display.flip()
                     reloj.tick(30)
                 break
 
+        # Al finalizar la partida, guardar historial y actualizar modelo
         guardar_historial()
-        if modo_juego == "adaptativo" or modo_juego == "solitario":
-            mostrar_mensaje_temporal("Actualizando IA...", 1.0)
-            actualizar_modelo()
-            mostrar_mensaje_temporal("¡IA actualizada!", 1.5)
+        mostrar_mensaje_centrado("Actualizando IA...", 80, COLOR_ACENTO, 36)
+        actualizar_modelo()
+        mostrar_mensaje_centrado("¡IA actualizada!", 120, (100,255,100), 36)
 
         if modo_juego == "solitario" and partida_terminada and puntuacion_jugador > 0:
             ranking = cargar_ranking()
