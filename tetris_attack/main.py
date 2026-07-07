@@ -34,7 +34,7 @@ jugador = None
 ia = None
 modelo_adaptativo = None
 turno_ia_timer = 0
-ia_accion_pendiente = None
+ia_accion_pendiente = None      # tupla (columna, fila) donde la IA hizo el intercambio
 partida_terminada = False
 ganador = None
 historial_jugador = []
@@ -54,7 +54,7 @@ animaciones = []
 pausa = False
 
 # ------------------------------------------------------------
-# Utilidades visuales (se mantienen igual que antes)
+# Utilidades visuales (sin cambios)
 # ------------------------------------------------------------
 def lerp_color(c1, c2, t):
     t = max(0.0, min(1.0, t))
@@ -131,7 +131,7 @@ class Estrella:
 particulas = [Estrella() for _ in range(60)]
 
 # ------------------------------------------------------------
-# Funciones de dibujo del tablero (con cursor de IA incluido)
+# Funciones de dibujo del tablero (cursor de IA corregido)
 # ------------------------------------------------------------
 def dibujar_panel(superficie, color_idx, x, y, w, h):
     if color_idx is None:
@@ -204,7 +204,7 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
             y = base_y + p.offset_y
             dibujar_panel(pantalla, color, x, y, TAM_CELDA - 6, TAM_CELDA - 6)
 
-    # Cursor del jugador
+    # --- Cursor del jugador ---
     if es_jugador:
         cx, cy = board.cursor_x, board.cursor_y
         if inicio_fila <= cy < FILAS_TOTALES:
@@ -233,17 +233,11 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
                 [(centro_x - 7, cy_pix + TAM_CELDA + 7 + desp), (centro_x + 7, cy_pix + TAM_CELDA + 7 + desp),
                  (centro_x, cy_pix + TAM_CELDA + 15 + desp)])
 
-    # Cursor de la IA
+    # --- Cursor de la IA (corregido: usa la fila exacta del movimiento) ---
     if not es_jugador and ia_accion_pendiente is not None and board is ia:
-        x_col = ia_accion_pendiente
-        for fila in range(FILAS_TOTALES-1, -1, -1):
-            if board.matriz[fila][x_col] is not None or board.matriz[fila][x_col+1] is not None:
-                cy_ia = fila
-                break
-        else:
-            cy_ia = board.cursor_y
-        if inicio_fila <= cy_ia < FILAS_TOTALES:
-            fila_vis = cy_ia - inicio_fila
+        x_col, y_fila = ia_accion_pendiente  # ahora es tupla (columna, fila)
+        if inicio_fila <= y_fila < FILAS_TOTALES:
+            fila_vis = y_fila - inicio_fila
             cx_pix = offset_x + x_col * TAM_CELDA
             cy_pix = offset_y + fila_vis * TAM_CELDA
             cursor_rect = pygame.Rect(cx_pix, cy_pix, TAM_CELDA*2, TAM_CELDA)
@@ -256,6 +250,7 @@ def dibujar_tablero(board, offset_x, offset_y, es_jugador=True, tiempo_subida_re
             grosor = 2 + int(pulso * 2)
             pygame.draw.rect(pantalla, color_cursor, cursor_rect, grosor, border_radius=6)
 
+    # Barra de subida
     if not partida_terminada:
         barra_rect = pygame.Rect(offset_x, offset_y - 20, ancho_px, 10)
         pygame.draw.rect(pantalla, (20, 20, 30), barra_rect, border_radius=6)
@@ -304,7 +299,6 @@ def mostrar_texto_temporal(texto, x, y, duracion=60, color=(255, 220, 80), tama�
     animaciones.append(('texto', (texto, x, y, fuente_temp, color), duracion))
 
 def mostrar_mensaje_centrado(texto, duracion=90, color=(255,255,0), tamaño=40):
-    """Muestra un mensaje grande centrado que dura varios frames."""
     fuente_temp = pygame.font.SysFont(FUENTE_FAMILIA, tamaño, bold=True)
     x = ANCHO_VENTANA // 2 - fuente_temp.size(texto)[0] // 2
     y = ALTO_VENTANA // 2 - 30
@@ -527,7 +521,7 @@ def menu_dificultad():
         reloj.tick(30)
 
 # ------------------------------------------------------------
-# Lógica de juego (incluye guardado automático del modelo al finalizar)
+# Lógica de juego (IA corregida)
 # ------------------------------------------------------------
 def procesar_eventos():
     global jugador, ia, turno_ia_timer, partida_terminada, ganador, historial_jugador, pausa
@@ -607,21 +601,21 @@ def actualizar_ia():
     turno_ia_timer += 1
     if turno_ia_timer >= IA_DELAY:
         turno_ia_timer = 0
-        ia_accion_pendiente = None
+        ia_accion_pendiente = None   # limpiamos el cursor anterior
         copia_logica = ia.copiar()
         if modo_juego == "clasico":
-            accion = elegir_movimiento_clasico(copia_logica, dificultad_ia)
-            if accion is not None:
-                x, y = accion
-                ia_accion_pendiente = x   # para el cursor
+            resultado = elegir_movimiento_clasico(copia_logica, dificultad_ia)
+            if resultado is not None:
+                x, y = resultado
+                ia_accion_pendiente = (x, y)   # tupla con columna y fila
                 ia.intercambiar_en(x, y)
-        else:
+        else:  # adaptativo
             if modelo_adaptativo is None:
                 modelo_adaptativo = cargar_modelo()
             resultado = elegir_movimiento_adaptativo(copia_logica, modelo_adaptativo)
             if resultado != (None, None):
                 x, y = resultado
-                ia_accion_pendiente = x
+                ia_accion_pendiente = (x, y)
                 ia.intercambiar_en(x, y)
 
 def actualizar_subida():
@@ -779,7 +773,7 @@ def menu_seleccion_modo():
         dt = reloj_local.tick(60) / 1000.0
 
 # ------------------------------------------------------------
-# Bucle principal (con actualización del modelo)
+# Bucle principal
 # ------------------------------------------------------------
 def main():
     global pausa, partida_terminada, ganador, modo_juego, puntuacion_jugador, tiempo_subida, velocidad_subida
@@ -822,7 +816,6 @@ def main():
                     reloj.tick(30)
                 break
 
-        # Al finalizar la partida, guardar historial y actualizar modelo
         guardar_historial()
         mostrar_mensaje_centrado("Actualizando IA...", 80, COLOR_ACENTO, 36)
         actualizar_modelo()
